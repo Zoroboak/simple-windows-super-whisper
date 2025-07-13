@@ -22,7 +22,7 @@ TEMP_DIR = tempfile.gettempdir()
 # Whisper API settings
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "whisper-1") 
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "en")  # Default to English
-WHISPER_PROMPT = os.getenv("WHISPER_PROMPT", "Hello, Whisper API! Please transcribe my audio file into text. Additionally, I need you to add punctuation to the text. Please transcribe in the original spoken language and do not translate the content.")
+WHISPER_PROMPT = os.getenv("WHISPER_PROMPT", "Transcribe this audio exactly as spoken, preserving the original language. Guidelines: 1) Keep technical terms, code snippets, and variable names exactly as pronounced. 2) Add appropriate punctuation for readability. 3) If Spanish is spoken, respond in Spanish. If English is spoken, respond in English. 4) Maintain proper formatting for code-related content. 5) Don't translate or change the language - preserve exactly what was said. 6) For mixed languages, keep each phrase in its original language.")
 API_ENDPOINT = "https://api.openai.com/v1/audio/transcriptions"
 
 # UI settings
