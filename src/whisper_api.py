@@ -43,7 +43,11 @@ class WhisperAPI:
         try:
             # Log file details
             file_size = os.path.getsize(audio_file_path)
-            logger.debug(f"Processing audio file: {audio_file_path} (size: {file_size/1024:.1f} KB)")
+            logger.info(f"Processing audio file: {audio_file_path} (size: {file_size/1024:.1f} KB)")
+            
+            # Check if file is too small
+            if file_size < 1024:  # Less than 1KB
+                logger.warning(f"Audio file is very small: {file_size} bytes. May contain no audio.")
             
             headers = {
                 "Authorization": f"Bearer {self.api_key}"
@@ -62,6 +66,7 @@ class WhisperAPI:
                 }
                 
                 logger.info(f"Sending request to Whisper API with model: {self.model}, language: {WHISPER_LANGUAGE}")
+                logger.info(f"Using prompt: {WHISPER_PROMPT[:100]}..." if WHISPER_PROMPT else "No custom prompt")
                 start_time = time.time()
                 
                 response = requests.post(
