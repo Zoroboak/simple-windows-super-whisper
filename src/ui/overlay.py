@@ -417,7 +417,7 @@ class RecordingOverlay(QtWidgets.QWidget):
         self.space_hint.hide()
         
         if success:
-            self.status_label.setText("Copied to clipboard!")
+            self.status_label.setText("Text inserted successfully!")
             self.done_btn.setText("Close")
             self.done_btn.setEnabled(True)
             self.done_btn.clicked.disconnect()
@@ -425,6 +425,9 @@ class RecordingOverlay(QtWidgets.QWidget):
             
             # Show Record Again button
             self.record_again_btn.show()
+            
+            # Auto-close after 2 seconds
+            QtCore.QTimer.singleShot(2000, self.close)
         else:
             self.status_label.setText("Transcription failed")
             error_dialog = QtWidgets.QMessageBox()

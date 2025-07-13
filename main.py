@@ -12,12 +12,12 @@ from config import (
     SHORTCUT_KEY, OPENAI_API_KEY, API_ENDPOINT, 
     WHISPER_MODEL, WHISPER_LANGUAGE, SAMPLE_RATE,
     MAX_RECORDING_SECONDS, get_temp_audio_path,
-    validate_config, APP_NAME, APP_VERSION
+    validate_config, APP_NAME, APP_VERSION, AUTO_INSERT_ENABLED
 )
 from src.audio import AudioRecorder
 from src.hotkey import setup_hotkey
 from src.whisper_api import WhisperAPI
-from src.clipboard import copy_to_clipboard
+from src.clipboard import copy_to_clipboard, auto_insert_text
 from src.ui.overlay import RecordingOverlay, show_notification
 from src.utils import setup_logging, clean_temp_files
 
@@ -197,9 +197,17 @@ class WhisperApp(QtCore.QObject):
             if copy_to_clipboard(text_or_error):
                 logger.info(f"Transcription copied to clipboard: {text_or_error[:30]}...")
                 
-                # Show success in the overlay
+                # Close overlay immediately so focus returns to original field
                 if self.recording_overlay and self.recording_overlay.isVisible():
-                    self.recording_overlay.show_transcription_result(True, text_or_error)
+                    self.recording_overlay.close()
+                    self.recording_overlay = None
+                
+                # Automatically insert into selected input if enabled
+                if AUTO_INSERT_ENABLED and auto_insert_text(text_or_error):
+                    logger.info(f"Auto-inserted into text field: {text_or_error[:30]}...")
+                else:
+                    logger.error("Failed to auto-insert text or not enabled")
+                
             else:
                 logger.error("Failed to copy to clipboard")
                 if self.recording_overlay and self.recording_overlay.isVisible():

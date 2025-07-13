@@ -32,6 +32,9 @@ UI_OPACITY = float(os.getenv("UI_OPACITY", 0.9))
 # Hotkey settings
 SHORTCUT_KEY = "ctrl+space"
 
+# Auto-insert settings
+AUTO_INSERT_ENABLED = os.getenv("AUTO_INSERT_ENABLED", "true").lower() == "true"
+
 def validate_config():
     """Validate that all required configuration is available"""
     if not OPENAI_API_KEY:

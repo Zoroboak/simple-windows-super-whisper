@@ -1,5 +1,7 @@
 import pyperclip
 import logging
+import time
+import keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -34,4 +36,27 @@ def get_clipboard_text():
         return text
     except Exception as e:
         logger.error(f"Failed to read from clipboard: {e}")
-        return "" 
+        return ""
+
+def auto_insert_text(text):
+    """
+    Automatically insert text into the currently focused field
+    
+    Args:
+        text (str): Text to insert
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Longer delay to ensure the overlay loses focus and the original field regains it
+        time.sleep(0.5)
+        
+        # Type the text using keyboard simulation
+        keyboard.write(text)
+        
+        logger.info(f"Auto-inserted {len(text)} characters")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to auto-insert text: {e}")
+        return False
