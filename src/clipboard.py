@@ -49,14 +49,29 @@ def auto_insert_text(text):
         bool: True if successful, False otherwise
     """
     try:
-        # Longer delay to ensure the overlay loses focus and the original field regains it
-        time.sleep(0.5)
+        # Ensure text is already in clipboard
+        if not copy_to_clipboard(text):
+            return False
+            
+        # Give time for overlay to close and original window to regain focus
+        time.sleep(0.3)
         
-        # Type the text using keyboard simulation
-        keyboard.write(text)
+        # Use Ctrl+V to paste - more reliable than keyboard.write()
+        keyboard.press_and_release('ctrl+v')
         
-        logger.info(f"Auto-inserted {len(text)} characters")
+        # Small delay to ensure paste completes
+        time.sleep(0.1)
+        
+        logger.info(f"Auto-inserted {len(text)} characters using paste")
         return True
     except Exception as e:
         logger.error(f"Failed to auto-insert text: {e}")
-        return False
+        # Fallback: try direct typing method
+        try:
+            time.sleep(0.2)
+            keyboard.write(text)
+            logger.info(f"Auto-inserted {len(text)} characters using fallback method")
+            return True
+        except Exception as e2:
+            logger.error(f"Fallback auto-insert also failed: {e2}")
+            return False

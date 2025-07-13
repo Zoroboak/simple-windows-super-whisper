@@ -475,29 +475,34 @@ class RecordingOverlay(QtWidgets.QWidget):
             
     def keyPressEvent(self, event):
         """Handle key press events"""
-        # If Space key is pressed
         if event.key() == QtCore.Qt.Key_Space:
             logger.debug(f"Space key pressed - timer active: {self.timer.isActive()}, button text: '{self.done_btn.text()}', enabled: {self.done_btn.isEnabled()}")
             
-            # ONLY handle Space if we're in active recording mode
+            # Ensure we're only acting on the correct button text and state
             if self.timer.isActive() and self.done_btn.isEnabled() and self.done_btn.text() == "Done":
                 logger.debug("Space key - triggering finish_recording()")
                 self.finish_recording()
+            elif self.timer.isActive():
+                # If space is pressed during recording, stop immediately
+                logger.debug("Space key - forcing stop_recording() due to active timer")
+                self.stop_recording_override()
             else:
                 logger.debug("Space key - ignoring in current state")
             
-            # Always consume the event to prevent it from being processed elsewhere
             event.accept()
             return
         
-        # Handle Escape key - log it and don't let it auto-close the window
         if event.key() == QtCore.Qt.Key_Escape:
             logger.debug("Escape key pressed - ignoring to prevent accidental cancellation")
             event.accept()
             return
             
-        # For all other keys, pass to parent
         super().keyPressEvent(event)
+
+    def stop_recording_override(self):
+        """Force recording stop due to Space key press override"""
+        logger.info("Forcing recording stop due to Space key press override")
+        self.finish_recording()
 
     def _emit_recording_started(self):
         """Emit the recording_started signal after a slight delay"""
