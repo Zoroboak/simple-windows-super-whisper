@@ -40,6 +40,11 @@ const ROUTES = [
     maxSegmentSeconds: 240, requestTimeoutMs: 22000, badge: 'Free tier · precisión', note: 'Fallback gratuito de mayor precisión.'
   },
   {
+    id: 'mistral-voxtral-mini2', name: 'Mistral directo · Voxtral Mini Transcribe 2', family: 'premium', transport: 'mistral-multipart',
+    keyRef: 'mistral', baseUrl: 'https://api.mistral.ai/v1', model: 'voxtral-mini-latest', costPerHourUsd: 0.18,
+    maxSegmentSeconds: 240, requestTimeoutMs: 30000, badge: 'Directo · UE', note: 'Batch directo de Mistral; alternativa independiente de OpenRouter y útil para español multilingüe.'
+  },
+  {
     id: 'openai-gpt-transcribe', name: 'OpenAI directo · GPT Transcribe', family: 'premium', transport: 'openai-multipart',
     keyRef: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-transcribe', costPerHourUsd: 0.27,
     maxSegmentSeconds: 240, requestTimeoutMs: 30000, badge: 'Directo', note: 'Ruta directa opcional, independiente de OpenRouter.'
@@ -93,8 +98,6 @@ function endpointSummary(endpoint = {}) {
     endpoint.uptime, endpoint.uptime_last_30m, endpoint.uptime_last_1h,
     endpoint.uptime_last_24h, perf.uptime, perf.uptime_last_30m
   );
-  // OpenRouter presents latency as seconds in public performance views. Some
-  // internal/legacy shapes may already return milliseconds; avoid double scaling.
   const latencyMs = latencyRaw == null ? null : latencyRaw * (latencyRaw < 50 ? 1000 : 1);
   const uptime = uptimeRaw == null ? null : (uptimeRaw <= 1 ? uptimeRaw * 100 : uptimeRaw);
   return {
