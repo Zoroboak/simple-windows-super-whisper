@@ -50,15 +50,13 @@
           "Comment": "Voice dictation in any application",
           "StartupWMClass": "Alex Dictate"
         }
-      },
-      "icon": "assets/icon.png"
+      }
     },
     "win": {
       "target": [
         "nsis",
         "portable"
-      ],
-      "icon": "assets/icon.png"
+      ]
     },
     "mac": {
       "target": [
@@ -69,8 +67,7 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Alex Dictate needs microphone access to transcribe your voice.",
         "NSAppleEventsUsageDescription": "Alex Dictate uses accessibility automation to paste transcribed text into the active application."
-      },
-      "icon": "assets/icon.png"
+      }
     },
     "protocols": [
       {
