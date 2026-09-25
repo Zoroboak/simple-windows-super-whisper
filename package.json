@@ -1,0 +1,51 @@
+{
+  "name": "alex-dictate",
+  "version": "1.0.0",
+  "description": "Private, resilient cross-platform voice dictation for Windows, Linux/Wayland and macOS.",
+  "main": "src/main.js",
+  "author": "Zoroboak",
+  "license": "MIT",
+  "desktopName": "com.zoroboak.AlexDictate.desktop",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "test": "node --test tests/*.test.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/providers.js && node --check src/store.js && node --check src/injector.js && node --check renderer/app.js && node --check renderer/overlay.js",
+    "dist": "electron-builder --publish never",
+    "dist:linux": "electron-builder --linux AppImage deb --publish never",
+    "dist:win": "electron-builder --win nsis portable --publish never",
+    "dist:mac": "electron-builder --mac dmg zip --publish never"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "43.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.zoroboak.AlexDictate",
+    "productName": "Alex Dictate",
+    "asar": true,
+    "files": ["src/**/*", "renderer/**/*", "assets/**/*", "package.json", "README.md"],
+    "directories": {"output": "dist"},
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Utility",
+      "desktop": {
+        "entry": {
+          "Name": "Alex Dictate",
+          "Comment": "Voice dictation in any application",
+          "StartupWMClass": "Alex Dictate"
+        }
+      }
+    },
+    "win": {"target": ["nsis", "portable"]},
+    "mac": {
+      "target": ["dmg", "zip"],
+      "category": "public.app-category.productivity",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Alex Dictate needs microphone access to transcribe your voice.",
+        "NSAppleEventsUsageDescription": "Alex Dictate uses accessibility automation to paste transcribed text into the active application."
+      }
+    }
+  }
+}

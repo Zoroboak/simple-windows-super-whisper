@@ -1,0 +1,27 @@
+const { contextBridge, ipcRenderer } = require('electron');
+contextBridge.exposeInMainWorld('alex', {
+  state: () => ipcRenderer.invoke('state:get'),
+  saveSettings: patch => ipcRenderer.invoke('settings:set', patch),
+  saveProviders: items => ipcRenderer.invoke('providers:set', items),
+  saveDictionary: items => ipcRenderer.invoke('dictionary:set', items),
+  saveSnippets: items => ipcRenderer.invoke('snippets:set', items),
+  setSecret: (name, value) => ipcRenderer.invoke('secret:set', name, value),
+  retry: id => ipcRenderer.invoke('history:retry', id),
+  downloadAudio: id => ipcRenderer.invoke('history:save-audio', id),
+  copyText: id => ipcRenderer.invoke('history:copy', id),
+  deleteHistory: id => ipcRenderer.invoke('history:delete', id),
+  diagnose: () => ipcRenderer.invoke('diagnose'),
+  registerHotkey: accelerator => ipcRenderer.invoke('hotkey:set', accelerator),
+  overlayReady: () => ipcRenderer.send('overlay:ready'),
+  recordingStarted: meta => ipcRenderer.invoke('recording:started', meta),
+  recordingChunk: chunk => ipcRenderer.send('recording:pcm', chunk),
+  recordingEncodedChunk: (id, chunk) => ipcRenderer.send('recording:encoded-chunk', { id, chunk }),
+  recordingFinished: payload => ipcRenderer.invoke('recording:finished', payload),
+  recordingCancelled: id => ipcRenderer.invoke('recording:cancelled', id),
+  toggle: () => ipcRenderer.send('recording:toggle'),
+  onCommand: fn => ipcRenderer.on('overlay:command', (_e, data) => fn(data)),
+  onLiveText: fn => ipcRenderer.on('overlay:live-text', (_e, data) => fn(data)),
+  onStatus: fn => ipcRenderer.on('overlay:status', (_e, data) => fn(data)),
+  onStateChanged: fn => ipcRenderer.on('state:changed', () => fn()),
+  openSettings: () => ipcRenderer.send('window:settings')
+});
