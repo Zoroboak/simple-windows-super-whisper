@@ -22,7 +22,7 @@ class Store {
         autoPaste: true,
         insertionMode: 'final-safe',
         keepCompletedAudioDays: 14,
-        livePreview: true,
+        livePreview: false,
         liveProvider: 'mistral',
         liveTargetDelayMs: 650,
         cleanupFillers: false,
@@ -100,12 +100,37 @@ class Store {
     };
   }
 
+  computedRouteStats() {
+    const byRoute = {};
+    for (const h of this.state.history || []) {
+      for (const a of h.attempts || []) {
+        if (!a.route || !['ok', 'error'].includes(a.status)) continue;
+        const r = byRoute[a.route] || (byRoute[a.route] = { attempts: 0, ok: 0, error: 0, latencyMsTotal: 0, latencySamples: 0, costUsd: 0, lastAt: null });
+        r.attempts += 1;
+        r[a.status] += 1;
+        if (Number.isFinite(Number(a.latencyMs))) { r.latencyMsTotal += Number(a.latencyMs); r.latencySamples += 1; }
+        if (Number.isFinite(Number(a.costUsd))) r.costUsd += Number(a.costUsd);
+        r.lastAt = a.at || r.lastAt;
+      }
+    }
+    return Object.fromEntries(Object.entries(byRoute).map(([id, r]) => [id, {
+      attempts: r.attempts,
+      ok: r.ok,
+      error: r.error,
+      successRate: r.attempts ? Math.round(r.ok / r.attempts * 100) : null,
+      avgLatencyMs: r.latencySamples ? Math.round(r.latencyMsTotal / r.latencySamples) : null,
+      costUsd: Math.round(r.costUsd * 1e6) / 1e6,
+      lastAt: r.lastAt
+    }]));
+  }
+
   publicState() {
     const copy = JSON.parse(JSON.stringify(this.state));
     copy.secrets = Object.fromEntries(Object.keys(copy.secrets || {}).map(k => [k, true]));
     copy.stats = this.computedStats();
     copy.routeCatalog = ROUTES;
     copy.profiles = PROFILES;
+    copy.routeStats = this.computedRouteStats();
     return copy;
   }
 
@@ -193,6 +218,17 @@ class Store {
     return target;
   }
 
+  ensureWavForHistory(id) {
+    const item = this.state.history.find(x => x.id === id);
+    if (!item?.audioPath || !fs.existsSync(item.audioPath)) throw new Error('No hay audio local recuperable.');
+    if (!item.audioPath.endsWith('.pcm.partial')) return item.audioPath;
+    const target = wavPath(this.audioDir, id);
+    const info = finalizePcmPartial(item.audioPath, target, PCM_SAMPLE_RATE);
+    try { fs.unlinkSync(item.audioPath); } catch (_) {}
+    this.updateHistory(id, { audioPath: target, bytes: fs.statSync(target).size, durationMs: item.durationMs || info.durationMs, mime: 'audio/wav', status: 'queued', error: null });
+    return target;
+  }
+
   markSuccess(id, text, route) {
     return this.updateHistory(id, { status: 'done', text, provider: route.id, model: route.model, error: null });
   }
@@ -201,7 +237,7 @@ class Store {
   recoverInterrupted() {
     let changed = false;
     for (const h of this.state.history) {
-      if (!['recording', 'processing', 'queued'].includes(h.status)) continue;
+      if (!['recording', 'processing', 'queued'].includes(h.status) && !(h.status === 'failed' && h.audioPath?.endsWith('.pcm.partial'))) continue;
       const previousStatus = h.status;
       if (h.audioPath && fs.existsSync(h.audioPath)) {
         if (h.audioPath.endsWith('.pcm.partial')) {
