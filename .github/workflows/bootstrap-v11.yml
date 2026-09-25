@@ -1,0 +1,60 @@
+name: Bootstrap Alex Dictate v1.1
+
+on:
+  push:
+    branches: [alex-dictate-v1-final]
+    paths:
+      - ".bootstrap-v11/**"
+      - ".github/workflows/bootstrap-v11.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  expand:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect bootstrap payload
+        id: payload
+        shell: bash
+        run: |
+          if compgen -G ".bootstrap-v11/alex11.b64.*" > /dev/null; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Reconstruct v1.1 source
+        if: steps.payload.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap-v11/alex11.b64.* | base64 -d > /tmp/alex11.zip
+          unzip -t /tmp/alex11.zip
+          rm -rf /tmp/alex11
+          unzip -q /tmp/alex11.zip -d /tmp/alex11
+      - name: Replace application source
+        if: steps.payload.outputs.present == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          find . -mindepth 1 -maxdepth 1 \
+            ! -name .git ! -name .github ! -name .bootstrap-v11 ! -name assets \
+            -exec rm -rf {} +
+          cp -a /tmp/alex11/alex-dictate/. .
+          rm -rf .bootstrap-v11
+      - name: Validate v1.1
+        if: steps.payload.outputs.present == 'true'
+        run: |
+          node --version
+          npm run check
+          npm test
+      - name: Commit v1.1
+        if: steps.payload.outputs.present == 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: Alex Dictate v1.1 provider routing and resilience" || exit 0
+          git push
