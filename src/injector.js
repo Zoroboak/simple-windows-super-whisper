@@ -1,6 +1,5 @@
 const { clipboard } = require('electron');
 const { spawn } = require('child_process');
-const os = require('os');
 
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -12,16 +11,21 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+async function commandExists(cmd) {
+  const probe = process.platform === 'win32' ? ['where.exe', [cmd]] : ['sh', ['-lc', `command -v ${cmd}`]];
+  try { await run(probe[0], probe[1]); return true; } catch (_) { return false; }
+}
+
 async function pasteText(text) {
-  clipboard.writeText(text);
+  clipboard.writeText(String(text ?? ''));
   const platform = process.platform;
   if (platform === 'win32') {
-    const script = '$wshell = New-Object -ComObject wscript.shell; Start-Sleep -Milliseconds 70; $wshell.SendKeys("^v")';
+    const script = '$wshell = New-Object -ComObject wscript.shell; Start-Sleep -Milliseconds 55; $wshell.SendKeys("^v")';
     await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script]);
     return { method: 'powershell-sendkeys' };
   }
   if (platform === 'darwin') {
-    await run('osascript', ['-e', 'delay 0.07', '-e', 'tell application "System Events" to keystroke "v" using command down']);
+    await run('osascript', ['-e', 'delay 0.055', '-e', 'tell application "System Events" to keystroke "v" using command down']);
     return { method: 'osascript' };
   }
 
@@ -30,30 +34,43 @@ async function pasteText(text) {
     try {
       await run('ydotool', ['key', '29:1', '47:1', '47:0', '29:0']);
       return { method: 'ydotool' };
-    } catch (e) {
-      return { method: 'clipboard-only', warning: `Texto copiado, pero el pegado automático en Wayland necesita ydotool configurado: ${e.message}` };
+    } catch (first) {
+      try {
+        await run('wtype', ['-M', 'ctrl', '-k', 'v', '-m', 'ctrl']);
+        return { method: 'wtype' };
+      } catch (second) {
+        return { method: 'clipboard-only', warning: 'Texto copiado. Para pegado automático en Wayland instala/configura ydotool (preferido) o wtype.' };
+      }
     }
   }
   try {
     await run('xdotool', ['key', '--clearmodifiers', 'ctrl+v']);
     return { method: 'xdotool' };
-  } catch (e) {
-    return { method: 'clipboard-only', warning: `Texto copiado; no se pudo simular Ctrl+V: ${e.message}` };
+  } catch (_) {
+    return { method: 'clipboard-only', warning: 'Texto copiado; no se pudo simular Ctrl+V en X11.' };
   }
 }
 
 async function diagnoseInjection() {
   const platform = process.platform;
+  const wayland = Boolean(process.env.WAYLAND_DISPLAY);
+  const tools = {};
+  if (platform === 'linux') {
+    tools.ydotool = await commandExists('ydotool');
+    tools.wtype = await commandExists('wtype');
+    tools.xdotool = await commandExists('xdotool');
+  }
   return {
     platform,
-    wayland: Boolean(process.env.WAYLAND_DISPLAY),
+    wayland,
     x11: Boolean(process.env.DISPLAY),
     desktop: process.env.XDG_CURRENT_DESKTOP || '',
     sessionType: process.env.XDG_SESSION_TYPE || '',
-    recommendation: platform === 'linux' && process.env.WAYLAND_DISPLAY
-      ? 'Instala y habilita ydotool para pegado automático en apps Wayland nativas. El hotkey sí usa el portal XDG de Electron.'
-      : 'La inyección utiliza las herramientas nativas del sistema.'
+    tools,
+    recommendation: platform === 'linux' && wayland
+      ? 'Hotkey mediante XDG GlobalShortcuts. Para pegar: ydotool preferido; wtype como fallback; si ninguno está disponible se conserva el texto en el portapapeles.'
+      : 'La inyección utiliza automatización nativa del sistema.'
   };
 }
 
-module.exports = { pasteText, diagnoseInjection };
+module.exports = { pasteText, diagnoseInjection, commandExists };

@@ -1,7 +1,7 @@
 {
   "name": "alex-dictate",
-  "version": "1.0.0",
-  "description": "Private, resilient cross-platform voice dictation for Windows, Linux/Wayland and macOS.",
+  "version": "1.1.0",
+  "description": "Local-first cross-platform voice dictation with persistent provider fallbacks, realtime preview and crash-safe audio.",
   "main": "src/main.js",
   "author": {
     "name": "Zoroboak",
@@ -13,7 +13,7 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "test": "node --test tests/*.test.js",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/providers.js && node --check src/store.js && node --check src/injector.js && node --check renderer/app.js && node --check renderer/overlay.js",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/providers.js && node --check src/store.js && node --check src/injector.js && node --check src/audio.js && node --check src/catalog.js && node --check renderer/app.js && node --check renderer/overlay.js",
     "dist": "electron-builder --publish never",
     "dist:linux": "electron-builder --linux AppImage deb --publish never",
     "dist:win": "electron-builder --win nsis portable --publish never",
@@ -68,6 +68,14 @@
         "NSMicrophoneUsageDescription": "Alex Dictate needs microphone access to transcribe your voice.",
         "NSAppleEventsUsageDescription": "Alex Dictate uses accessibility automation to paste transcribed text into the active application."
       }
-    }
+    },
+    "protocols": [
+      {
+        "name": "Alex Dictate",
+        "schemes": [
+          "alex-dictate"
+        ]
+      }
+    ]
   }
 }

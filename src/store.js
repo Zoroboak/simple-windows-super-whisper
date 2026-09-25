@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { safeStorage, app } = require('electron');
+const { PCM_SAMPLE_RATE, finalizePcmPartial, pcmPartialPath, wavPath } = require('./audio');
+const { ROUTES, PROFILES, normalizeChain } = require('./catalog');
 
 class Store {
   constructor() {
@@ -16,28 +18,54 @@ class Store {
     return {
       settings: {
         hotkey: 'CommandOrControl+Shift+Space',
-        language: 'auto',
+        language: 'es',
         autoPaste: true,
+        insertionMode: 'final-safe',
         keepCompletedAudioDays: 14,
-        mode: 'balanced',
-        livePreview: false,
+        livePreview: true,
         liveProvider: 'mistral',
         liveTargetDelayMs: 650,
         cleanupFillers: false,
-        microphoneId: 'default'
+        microphoneId: 'default',
+        openRouterRegion: 'global'
       },
-      providers: [
-        { id: 'groq-turbo', name: 'Groq · Whisper Large v3 Turbo', type: 'openai-stt', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo', enabled: true, priority: 10, keyRef: 'groq', note: 'Best value / default' },
-        { id: 'groq-large', name: 'Groq · Whisper Large v3', type: 'openai-stt', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3', enabled: true, priority: 20, keyRef: 'groq', note: 'Accuracy fallback' },
-        { id: 'openai-transcribe', name: 'OpenAI · gpt-4o-mini-transcribe', type: 'openai-stt', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini-transcribe', enabled: false, priority: 30, keyRef: 'openai', note: 'Optional paid fallback' }
-      ],
+      routing: {
+        profile: 'balanced',
+        chain: [...PROFILES.balanced.chain],
+        catalog: [],
+        catalogUpdatedAt: null
+      },
       secrets: {},
       dictionary: [],
       snippets: [],
       history: [],
-      stats: { totalWords: 0, totalSeconds: 0, successful: 0, failed: 0 },
-      schema: 1
+      schema: 2
     };
+  }
+
+  migrate(parsed) {
+    const base = this.defaults();
+    const next = {
+      ...base,
+      ...parsed,
+      settings: { ...base.settings, ...(parsed.settings || {}) },
+      routing: { ...base.routing, ...(parsed.routing || {}) },
+      schema: 2
+    };
+    if (!parsed.routing && Array.isArray(parsed.providers)) {
+      const legacy = parsed.providers.filter(x => x.enabled).sort((a,b) => Number(a.priority || 0) - Number(b.priority || 0)).map(x => x.id);
+      const mapped = legacy.map(id => ({
+        'groq-turbo': 'groq-turbo',
+        'groq-large': 'groq-large',
+        'openai-transcribe': 'openai-gpt-transcribe'
+      }[id])).filter(Boolean);
+      if (mapped.length) next.routing.chain = mapped;
+    }
+    next.routing.chain = normalizeChain(next.routing.chain);
+    if (!next.routing.chain.length) next.routing.chain = [...PROFILES.balanced.chain];
+    delete next.providers;
+    delete next.stats;
+    return next;
   }
 
   load() {
@@ -45,12 +73,7 @@ class Store {
     try {
       if (!fs.existsSync(this.file)) return base;
       const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8'));
-      return {
-        ...base,
-        ...parsed,
-        settings: { ...base.settings, ...(parsed.settings || {}) },
-        stats: { ...base.stats, ...(parsed.stats || {}) }
-      };
+      return this.migrate(parsed);
     } catch (e) {
       const backup = `${this.file}.corrupt-${Date.now()}`;
       try { fs.copyFileSync(this.file, backup); } catch (_) {}
@@ -64,14 +87,40 @@ class Store {
     fs.renameSync(tmp, this.file);
   }
 
+  computedStats() {
+    const done = this.state.history.filter(x => x.status === 'done');
+    const failed = this.state.history.filter(x => x.status === 'failed');
+    return {
+      totalWords: done.reduce((n, h) => n + String(h.text || '').trim().split(/\s+/).filter(Boolean).length, 0),
+      totalSeconds: Math.round(done.reduce((n, h) => n + Number(h.durationMs || 0), 0) / 1000),
+      successful: done.length,
+      failed: failed.length,
+      total: done.length + failed.length,
+      successRate: done.length + failed.length ? Math.round(done.length / (done.length + failed.length) * 100) : 100
+    };
+  }
+
   publicState() {
     const copy = JSON.parse(JSON.stringify(this.state));
     copy.secrets = Object.fromEntries(Object.keys(copy.secrets || {}).map(k => [k, true]));
+    copy.stats = this.computedStats();
+    copy.routeCatalog = ROUTES;
+    copy.profiles = PROFILES;
     return copy;
   }
 
   setSettings(patch) { this.state.settings = { ...this.state.settings, ...patch }; this.save(); }
-  setProviders(items) { this.state.providers = items; this.save(); }
+  setRouting(patch) {
+    const profile = patch.profile ?? this.state.routing.profile;
+    const chain = normalizeChain(patch.chain ?? this.state.routing.chain);
+    this.state.routing = { ...this.state.routing, ...patch, profile, chain: chain.length ? chain : [...PROFILES.balanced.chain] };
+    this.save();
+  }
+  setCatalog(catalog) {
+    this.state.routing.catalog = Array.isArray(catalog) ? catalog : [];
+    this.state.routing.catalogUpdatedAt = new Date().toISOString();
+    this.save();
+  }
   setDictionary(items) { this.state.dictionary = items; this.save(); }
   setSnippets(items) { this.state.snippets = items; this.save(); }
 
@@ -91,12 +140,10 @@ class Store {
   createPending(meta = {}) {
     const item = {
       id: crypto.randomUUID(),
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      status: 'recording',
-      text: '', provider: null, error: null,
-      durationMs: 0, bytes: 0, mime: meta.mime || 'audio/webm',
-      audioPath: null, attempts: [], appHint: meta.appHint || null
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+      status: 'recording', text: '', provider: null, model: null, error: null,
+      durationMs: 0, bytes: 0, mime: 'audio/wav', audioPath: null,
+      attempts: [], microphoneLabel: meta.microphoneLabel || null
     };
     this.state.history.unshift(item);
     this.save();
@@ -119,78 +166,66 @@ class Store {
     this.save();
   }
 
-  beginAudioStream(id, ext = 'webm') {
-    const finalPath = path.join(this.audioDir, `${id}.${ext}`);
-    const partialPath = `${finalPath}.partial`;
-    fs.writeFileSync(partialPath, Buffer.alloc(0));
-    this.updateHistory(id, { audioPath: partialPath, bytes: 0 });
-    return partialPath;
+  beginPcmStream(id) {
+    const p = pcmPartialPath(this.audioDir, id);
+    fs.writeFileSync(p, Buffer.alloc(0));
+    this.updateHistory(id, { audioPath: p, bytes: 0, mime: 'audio/pcm;rate=16000' });
+    return p;
   }
 
-  appendAudioChunk(id, buffer) {
+  appendPcmChunk(id, buffer) {
     const item = this.state.history.find(x => x.id === id);
-    if (!item?.audioPath || !item.audioPath.endsWith('.partial')) return false;
-    fs.appendFileSync(item.audioPath, buffer);
-    item.bytes = Number(item.bytes || 0) + buffer.length;
+    if (!item?.audioPath || !item.audioPath.endsWith('.pcm.partial')) return false;
+    const chunk = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    fs.appendFileSync(item.audioPath, chunk);
+    item.bytes = Number(item.bytes || 0) + chunk.length;
     item.updatedAt = new Date().toISOString();
     return true;
   }
 
-  finalizeAudioStream(id) {
+  finalizePcmStream(id) {
     const item = this.state.history.find(x => x.id === id);
-    if (!item?.audioPath) return null;
-    const partialPath = item.audioPath;
-    const finalPath = partialPath.endsWith('.partial') ? partialPath.slice(0, -8) : partialPath;
-    if (partialPath !== finalPath && fs.existsSync(partialPath)) fs.renameSync(partialPath, finalPath);
-    const bytes = fs.existsSync(finalPath) ? fs.statSync(finalPath).size : Number(item.bytes || 0);
-    this.updateHistory(id, { audioPath: finalPath, bytes, status: 'queued' });
-    return finalPath;
+    if (!item?.audioPath || !item.audioPath.endsWith('.pcm.partial')) throw new Error('No existe una captura PCM activa.');
+    const target = wavPath(this.audioDir, id);
+    const info = finalizePcmPartial(item.audioPath, target, PCM_SAMPLE_RATE);
+    try { fs.unlinkSync(item.audioPath); } catch (_) {}
+    this.updateHistory(id, { audioPath: target, bytes: fs.statSync(target).size, durationMs: info.durationMs, mime: 'audio/wav', status: 'queued' });
+    return target;
   }
 
-  saveAudio(id, buffer, ext = 'webm') {
-    const p = path.join(this.audioDir, `${id}.${ext}`);
-    const tmp = `${p}.partial`;
-    fs.writeFileSync(tmp, buffer);
-    fs.renameSync(tmp, p);
-    this.updateHistory(id, { audioPath: p, bytes: buffer.length, status: 'queued' });
-    return p;
+  markSuccess(id, text, route) {
+    return this.updateHistory(id, { status: 'done', text, provider: route.id, model: route.model, error: null });
   }
-
-  markSuccess(id, text, provider, durationMs) {
-    const words = String(text || '').trim().split(/\s+/).filter(Boolean).length;
-    this.state.stats.totalWords += words;
-    this.state.stats.totalSeconds += Math.round((durationMs || 0) / 1000);
-    this.state.stats.successful += 1;
-    const out = this.updateHistory(id, { status: 'done', text, provider, error: null, durationMs });
-    this.save();
-    return out;
-  }
-
-  markFailure(id, error) {
-    this.state.stats.failed += 1;
-    const out = this.updateHistory(id, { status: 'failed', error: String(error) });
-    this.save();
-    return out;
-  }
+  markFailure(id, error) { return this.updateHistory(id, { status: 'failed', error: String(error) }); }
 
   recoverInterrupted() {
     let changed = false;
     for (const h of this.state.history) {
-      if (!['recording', 'processing'].includes(h.status)) continue;
+      if (!['recording', 'processing', 'queued'].includes(h.status)) continue;
+      const previousStatus = h.status;
       if (h.audioPath && fs.existsSync(h.audioPath)) {
-        if (h.audioPath.endsWith('.partial')) {
-          const finalPath = h.audioPath.slice(0, -8);
+        if (h.audioPath.endsWith('.pcm.partial')) {
+          const target = wavPath(this.audioDir, h.id);
           try {
-            fs.renameSync(h.audioPath, finalPath);
-            h.audioPath = finalPath;
-            h.bytes = fs.statSync(finalPath).size;
-          } catch (_) {}
+            const info = finalizePcmPartial(h.audioPath, target, PCM_SAMPLE_RATE);
+            try { fs.unlinkSync(h.audioPath); } catch (_) {}
+            h.audioPath = target;
+            h.bytes = fs.statSync(target).size;
+            h.durationMs = h.durationMs || info.durationMs;
+            h.mime = 'audio/wav';
+            h.status = 'queued';
+            h.error = 'Grabación recuperada tras un cierre inesperado. Puedes reintentarla.';
+          } catch (e) {
+            h.status = 'failed';
+            h.error = `No se pudo recuperar el PCM parcial: ${e.message}`;
+          }
+        } else {
+          h.status = 'queued';
+          if (previousStatus === 'processing') h.error = 'Procesamiento interrumpido; el audio local sigue disponible.';
         }
-        h.status = 'queued';
-        h.error = 'La aplicación se cerró durante la grabación o el procesamiento; se recuperó el audio local y está listo para reintentar.';
       } else {
         h.status = 'failed';
-        h.error = 'La aplicación se cerró antes de poder persistir audio recuperable.';
+        h.error = 'La aplicación se cerró antes de persistir audio recuperable.';
       }
       h.updatedAt = new Date().toISOString();
       changed = true;
@@ -198,8 +233,22 @@ class Store {
     if (changed) this.save();
   }
 
+  cancelRecording(id) {
+    const h = this.state.history.find(x => x.id === id);
+    if (!h) return;
+    if (h.audioPath) { try { if (fs.existsSync(h.audioPath)) fs.unlinkSync(h.audioPath); } catch (_) {} }
+    this.updateHistory(id, { status: 'cancelled', error: null, audioPath: null, bytes: 0 });
+  }
+
+  deleteHistory(id) {
+    const h = this.state.history.find(x => x.id === id);
+    if (h?.audioPath) { try { if (fs.existsSync(h.audioPath)) fs.unlinkSync(h.audioPath); } catch (_) {} }
+    this.state.history = this.state.history.filter(x => x.id !== id);
+    this.save();
+  }
+
   cleanupCompletedAudio() {
-    const days = Number(this.state.settings.keepCompletedAudioDays || 14);
+    const days = Number(this.state.settings.keepCompletedAudioDays ?? 14);
     if (days < 0) return;
     const cutoff = Date.now() - days * 86400000;
     let changed = false;
