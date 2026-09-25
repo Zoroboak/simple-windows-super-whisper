@@ -1,48 +1,48 @@
 const ROUTES = [
   {
     id: 'openrouter-mai2', name: 'OpenRouter · MAI-Transcribe 2', family: 'premium', transport: 'openrouter-json',
-    keyRef: 'openrouter', model: 'microsoft/mai-transcribe-2', costPerHourUsd: 0.10, maxSegmentSeconds: 42,
+    keyRef: 'openrouter', model: 'microsoft/mai-transcribe-2', costPerHourUsd: 0.10, maxSegmentSeconds: 42, requestTimeoutMs: 25000,
     badge: 'Español + términos', note: 'Multilingüe, code-switching y keyword biasing. Buena primera opción premium.'
   },
   {
     id: 'openrouter-gpt-transcribe', name: 'OpenRouter · GPT Transcribe', family: 'premium', transport: 'openrouter-json',
-    keyRef: 'openrouter', model: 'openai/gpt-transcribe', costPerHourUsd: 0.27, maxSegmentSeconds: 42,
+    keyRef: 'openrouter', model: 'openai/gpt-transcribe', costPerHourUsd: 0.27, maxSegmentSeconds: 42, requestTimeoutMs: 25000,
     badge: 'Máxima calidad', note: 'Alta precisión; úsalo cuando priorices calidad sobre coste.'
   },
   {
     id: 'openrouter-whisper-v3', name: 'OpenRouter · Whisper Large v3', family: 'value', transport: 'openrouter-json',
-    keyRef: 'openrouter', model: 'openai/whisper-large-v3', costPerHourUsd: 0.0288, maxSegmentSeconds: 42,
+    keyRef: 'openrouter', model: 'openai/whisper-large-v3', costPerHourUsd: 0.0288, maxSegmentSeconds: 42, requestTimeoutMs: 25000,
     badge: 'Valor', note: 'Muy barato, robusto y multilingüe; OpenRouter enruta entre varios hosts.'
   },
   {
     id: 'openrouter-whisper-turbo', name: 'OpenRouter · Whisper Large v3 Turbo', family: 'value', transport: 'openrouter-json',
-    keyRef: 'openrouter', model: 'openai/whisper-large-v3-turbo', costPerHourUsd: 0.0108, maxSegmentSeconds: 42,
+    keyRef: 'openrouter', model: 'openai/whisper-large-v3-turbo', costPerHourUsd: 0.0108, maxSegmentSeconds: 42, requestTimeoutMs: 25000,
     badge: 'Muy barato', note: 'Prioriza velocidad y coste.'
   },
   {
     id: 'openrouter-qwen-flash', name: 'OpenRouter · Qwen3 ASR Flash', family: 'premium', transport: 'openrouter-json',
-    keyRef: 'openrouter', model: 'qwen/qwen3-asr-flash-2026-02-10', costPerHourUsd: 0.126, maxSegmentSeconds: 42,
+    keyRef: 'openrouter', model: 'qwen/qwen3-asr-flash-2026-02-10', costPerHourUsd: 0.126, maxSegmentSeconds: 42, requestTimeoutMs: 25000,
     badge: 'Ruido / campo lejano', note: 'Interesante para español y audio acústicamente difícil.'
   },
   {
     id: 'openrouter-qwen-06b', name: 'OpenRouter · Qwen3 ASR 0.6B', family: 'value', transport: 'openrouter-json',
-    keyRef: 'openrouter', model: 'qwen/qwen3-asr-0.6b', costPerHourUsd: 0.0108, maxSegmentSeconds: 42,
+    keyRef: 'openrouter', model: 'qwen/qwen3-asr-0.6b', costPerHourUsd: 0.0108, maxSegmentSeconds: 42, requestTimeoutMs: 25000,
     badge: 'Alternativa económica', note: 'Compacto y barato; útil como fallback adicional.'
   },
   {
     id: 'groq-turbo', name: 'Groq directo · Whisper Large v3 Turbo', family: 'free', transport: 'openai-multipart',
     keyRef: 'groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3-turbo', costPerHourUsd: 0.04,
-    maxSegmentSeconds: 240, badge: 'Free tier', note: 'Ruta gratuita recomendada; pago por uso muy barato si superas los límites.'
+    maxSegmentSeconds: 240, requestTimeoutMs: 20000, badge: 'Free tier', note: 'Ruta gratuita recomendada; pago por uso muy barato si superas los límites.'
   },
   {
     id: 'groq-large', name: 'Groq directo · Whisper Large v3', family: 'free', transport: 'openai-multipart',
     keyRef: 'groq', baseUrl: 'https://api.groq.com/openai/v1', model: 'whisper-large-v3', costPerHourUsd: 0.111,
-    maxSegmentSeconds: 240, badge: 'Free tier · precisión', note: 'Fallback gratuito de mayor precisión.'
+    maxSegmentSeconds: 240, requestTimeoutMs: 22000, badge: 'Free tier · precisión', note: 'Fallback gratuito de mayor precisión.'
   },
   {
     id: 'openai-gpt-transcribe', name: 'OpenAI directo · GPT Transcribe', family: 'premium', transport: 'openai-multipart',
     keyRef: 'openai', baseUrl: 'https://api.openai.com/v1', model: 'gpt-transcribe', costPerHourUsd: 0.27,
-    maxSegmentSeconds: 240, badge: 'Directo', note: 'Ruta directa opcional, independiente de OpenRouter.'
+    maxSegmentSeconds: 240, requestTimeoutMs: 30000, badge: 'Directo', note: 'Ruta directa opcional, independiente de OpenRouter.'
   }
 ];
 
