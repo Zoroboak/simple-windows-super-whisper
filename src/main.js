@@ -21,6 +21,7 @@ let currentHotkey = null;
 let cancelShortcutRegistered = false;
 let liveSocket = null;
 let liveText = '';
+let liveAuthEnabled = false;
 let liveInsertBuffer = '';
 let liveInsertTimer = null;
 let liveInsertChain = Promise.resolve();
@@ -35,6 +36,17 @@ function handleExternalArgs(argv = []) {
 
 app.on('second-instance', (_event, argv) => handleExternalArgs(argv));
 app.on('open-url', (event, url) => { event.preventDefault(); handleExternalArgs([url]); });
+
+function installLiveAuthHook() {
+  if (liveAuthEnabled) return;
+  liveAuthEnabled = true;
+  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['wss://api.mistral.ai/*'] }, (details, callback) => {
+    const key = store?.getSecret('mistral');
+    const headers = { ...details.requestHeaders };
+    if (key) headers.Authorization = `Bearer ${key}`;
+    callback({ requestHeaders: headers });
+  });
+}
 
 function queueLiveInsertion(delta) {
   if (store.state.settings.insertionMode !== 'live-experimental' || !store.state.settings.autoPaste || !delta) return;
@@ -56,14 +68,11 @@ function startLivePreview() {
     overlaySend('overlay:live-text', { text: '', warning: 'Realtime desactivado: falta API key de Mistral.' });
     return;
   }
+  installLiveAuthHook();
   liveText = '';
   liveInsertBuffer = '';
   const model = 'voxtral-mini-transcribe-realtime-2602';
-  const key = store.getSecret('mistral');
-  const ws = new net.WebSocket(
-    `wss://api.mistral.ai/v1/audio/transcriptions/realtime?model=${model}`,
-    { headers: { Authorization: `Bearer ${key}` } }
-  );
+  const ws = new net.WebSocket(`wss://api.mistral.ai/v1/audio/transcriptions/realtime?model=${model}`);
   liveSocket = ws;
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: 'session.update', session: {
@@ -151,10 +160,7 @@ function registerMainHotkey(accelerator) {
 }
 
 function registerTemporaryCancel() {
-  // Registering a second global shortcut under Wayland can trigger another
-  // portal authorization flow. Keep KDE/Wayland friction-free and expose
-  // cancellation through the tray while the main dictation shortcut toggles stop.
-  if (process.env.WAYLAND_DISPLAY) {
+  if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
     overlaySend('overlay:hint', { text: 'Pulsa el atajo de nuevo para terminar · cancelar desde la bandeja' });
     return;
   }
@@ -162,10 +168,7 @@ function registerTemporaryCancel() {
   try {
     cancelShortcutRegistered = globalShortcut.register('Escape', () => cancelActiveRecording());
     if (!cancelShortcutRegistered) overlaySend('overlay:hint', { text: 'Pulsa el atajo de nuevo para terminar · cancelar desde la bandeja' });
-  } catch (_) {
-    cancelShortcutRegistered = false;
-    overlaySend('overlay:hint', { text: 'Pulsa el atajo de nuevo para terminar · cancelar desde la bandeja' });
-  }
+  } catch (_) { cancelShortcutRegistered = false; }
 }
 function unregisterTemporaryCancel() {
   if (cancelShortcutRegistered) { try { globalShortcut.unregister('Escape'); } catch (_) {} }
@@ -203,11 +206,11 @@ async function cancelActiveRecording() {
   overlaySend('overlay:command', { type: 'cancel' });
 }
 
-async function processHistory(id) {
+async function processHistory(id, options = {}) {
   busy = true; updateTray();
   overlaySend('overlay:status', { status: 'processing', text: 'Transcribiendo con tu cadena de prioridad…' });
   try {
-    const result = await transcribeWithFallback(store, id);
+    const result = await transcribeWithFallback(store, id, options);
     store.markSuccess(id, result.text, result.route);
     let injection = { method: 'clipboard' };
     if (store.state.settings.insertionMode === 'live-experimental') {
@@ -273,10 +276,17 @@ ipcMain.handle('recording:started', (_e, meta) => {
   if (activeRecordingId) return activeRecordingId;
   const item = store.createPending(meta);
   activeRecordingId = item.id;
-  store.beginPcmStream(item.id);
-  startLivePreview(); registerTemporaryCancel();
-  recordingStartedAt = Date.now(); updateTray(); sendStateChanged();
-  return item.id;
+  try {
+    store.beginPcmStream(item.id);
+    startLivePreview(); registerTemporaryCancel();
+    recordingStartedAt = Date.now(); updateTray(); sendStateChanged();
+    return item.id;
+  } catch (e) {
+    store.markFailure(item.id, `No se pudo iniciar la persistencia local: ${e.message || e}`);
+    activeRecordingId = null;
+    updateTray(); sendStateChanged();
+    throw e;
+  }
 });
 
 ipcMain.on('recording:pcm', (_e, payload) => {
@@ -313,7 +323,13 @@ ipcMain.handle('recording:cancelled', (_e, id) => {
   activeRecordingId = null; busy = false; overlayWin.hide(); updateTray(); sendStateChanged(); return true;
 });
 
-ipcMain.handle('history:retry', async (_e, id) => { if (busy || activeRecordingId) return false; const h = store.state.history.find(x => x.id === id); if (!h?.audioPath || !fs.existsSync(h.audioPath)) throw new Error('No hay audio local para reintentar.'); store.updateHistory(id, { status: 'queued', error: null }); processHistory(id); return true; });
+ipcMain.handle('history:retry', async (_e, id) => {
+  if (busy || activeRecordingId) return false;
+  store.ensureWavForHistory(id);
+  store.updateHistory(id, { status: 'queued', error: null });
+  processHistory(id, { ignoreCooldown: true });
+  return true;
+});
 ipcMain.handle('history:copy', (_e, id) => { const h = store.state.history.find(x => x.id === id); if (h?.text) clipboard.writeText(h.text); return true; });
 ipcMain.handle('history:save-audio', async (_e, id) => {
   const h = store.state.history.find(x => x.id === id);
