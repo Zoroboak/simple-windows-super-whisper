@@ -3,6 +3,43 @@ const path = require('path');
 const { splitWavBuffer } = require('./audio');
 const { routeById } = require('./catalog');
 
+const routeHealth = new Map();
+
+function parseRetryAfter(value, now = Date.now()) {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? Math.max(0, at - now) : null;
+}
+
+function cooldownForError(error, failures = 1) {
+  const status = Number(error?.status || 0);
+  if (status === 429) return Math.min(180000, Math.max(15000, Number(error?.retryAfterMs || 30000)));
+  if (status === 401 || status === 403) return 120000;
+  if (status === 400 || status === 404 || status === 422) return 300000;
+  const base = error?.code === 'TIMEOUT' || status >= 500 || !status ? 10000 : 8000;
+  return Math.min(120000, base * (2 ** Math.max(0, failures - 1)));
+}
+
+function markRouteFailure(routeId, error, now = Date.now()) {
+  const previous = routeHealth.get(routeId);
+  const failures = (previous?.failures || 0) + 1;
+  const cooldownMs = cooldownForError(error, failures);
+  const next = { failures, blockedUntil: now + cooldownMs, reason: String(error?.message || error), status: error?.status || null };
+  routeHealth.set(routeId, next);
+  return next;
+}
+
+function markRouteSuccess(routeId) { routeHealth.delete(routeId); }
+function routeCooldown(routeId, now = Date.now()) {
+  const h = routeHealth.get(routeId);
+  if (!h) return null;
+  if (h.blockedUntil <= now) { routeHealth.delete(routeId); return null; }
+  return { ...h, remainingMs: h.blockedUntil - now };
+}
+function resetRouteHealth() { routeHealth.clear(); }
+
 function dictionaryTerms(dictionary = []) {
   return dictionary.map(x => typeof x === 'string' ? x : x.term).map(x => String(x || '').trim()).filter(Boolean).slice(0, 180);
 }
@@ -38,6 +75,7 @@ function parseResponseText(raw, res) {
     const msg = data?.error?.message || data?.message || `${res.status} ${res.statusText}`;
     const e = new Error(msg);
     e.status = res.status;
+    e.retryAfterMs = parseRetryAfter(res.headers.get('retry-after'));
     throw e;
   }
   if (!data?.text) throw new Error('El proveedor respondió sin texto.');
@@ -49,7 +87,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try { return await fetch(url, { ...options, signal: ctrl.signal }); }
   catch (e) {
-    if (e?.name === 'AbortError') throw new Error(`Timeout tras ${Math.round(timeoutMs / 1000)} s.`);
+    if (e?.name === 'AbortError') { const err = new Error(`Timeout tras ${Math.round(timeoutMs / 1000)} s.`); err.code = 'TIMEOUT'; throw err; }
     throw e;
   } finally { clearTimeout(timer); }
 }
@@ -87,7 +125,7 @@ async function transcribeOpenRouterSegment(route, apiKey, wavBuffer, state) {
       'X-OpenRouter-Title': 'Alex Dictate'
     },
     body: JSON.stringify(openRouterBody(route, wavBuffer, state))
-  }, 57000);
+  }, Number(route.requestTimeoutMs || 25000));
   const raw = await res.text();
   const data = parseResponseText(raw, res);
   return {
@@ -111,7 +149,7 @@ async function transcribeMultipartSegment(route, apiKey, wavBuffer, state) {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}` },
     body: form
-  }, 120000);
+  }, Number(route.requestTimeoutMs || 30000));
   const raw = await res.text();
   const data = parseResponseText(raw, res);
   return { text: data.text, costUsd: null, upstream: route.name, generationId: null };
@@ -144,6 +182,8 @@ async function transcribeWithFallback(store, historyId) {
 
   let lastError = null;
   let attempted = 0;
+  let credentialed = 0;
+  let cooldownSkipped = 0;
   for (const routeId of chain) {
     const route = routeById(routeId);
     if (!route) continue;
@@ -152,11 +192,22 @@ async function transcribeWithFallback(store, historyId) {
       store.addAttempt(historyId, { route: route.id, model: route.model, status: 'skipped', reason: `Sin API key ${route.keyRef}` });
       continue;
     }
+    credentialed += 1;
+    const cooldown = routeCooldown(route.id);
+    if (cooldown) {
+      cooldownSkipped += 1;
+      store.addAttempt(historyId, {
+        route: route.id, model: route.model, status: 'cooldown',
+        reason: `Ruta omitida temporalmente tras un fallo reciente (${Math.ceil(cooldown.remainingMs / 1000)} s).`
+      });
+      continue;
+    }
     attempted += 1;
     const started = Date.now();
     store.updateHistory(historyId, { status: 'processing', provider: route.id, model: route.model, error: null });
     try {
       const result = await transcribeRoute(route, key, item.audioPath, store.state);
+      markRouteSuccess(route.id);
       store.addAttempt(historyId, {
         route: route.id, model: route.model, status: 'ok', latencyMs: Date.now() - started,
         segments: result.segments, costUsd: result.costUsd, upstream: result.upstream
@@ -164,17 +215,20 @@ async function transcribeWithFallback(store, historyId) {
       return { ...result, route };
     } catch (e) {
       lastError = e;
+      markRouteFailure(route.id, e);
       store.addAttempt(historyId, {
         route: route.id, model: route.model, status: 'error', latencyMs: Date.now() - started,
         error: String(e.message || e), httpStatus: e.status || null
       });
     }
   }
-  if (!attempted) throw new Error('Ninguna ruta de la cadena tiene una API key configurada. Abre Proveedores y añade OpenRouter o Groq.');
+  if (!credentialed) throw new Error('Ninguna ruta de la cadena tiene una API key configurada. Abre Proveedores y añade OpenRouter o Groq.');
+  if (!attempted && cooldownSkipped) throw new Error('Todas las rutas con credencial están temporalmente en cooldown tras fallos recientes. El WAV sigue guardado para reintentar.');
   throw lastError || new Error('Todos los proveedores fallaron.');
 }
 
 module.exports = {
   transcribeWithFallback, transcribeRoute, transcribeOpenRouterSegment, transcribeMultipartSegment,
-  postProcess, applyDictionaryPrompt, dictionaryTerms, joinSegments
+  postProcess, applyDictionaryPrompt, dictionaryTerms, joinSegments,
+  parseRetryAfter, cooldownForError, markRouteFailure, markRouteSuccess, routeCooldown, resetRouteHealth
 };
