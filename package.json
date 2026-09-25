@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "description": "Private, resilient cross-platform voice dictation for Windows, Linux/Wayland and macOS.",
   "main": "src/main.js",
-  "author": "Zoroboak",
+  "author": {
+    "name": "Zoroboak",
+    "email": "noreply@github.com"
+  },
   "license": "MIT",
   "desktopName": "com.zoroboak.AlexDictate.desktop",
   "scripts": {
@@ -25,10 +28,21 @@
     "appId": "com.zoroboak.AlexDictate",
     "productName": "Alex Dictate",
     "asar": true,
-    "files": ["src/**/*", "renderer/**/*", "assets/**/*", "package.json", "README.md"],
-    "directories": {"output": "dist"},
+    "files": [
+      "src/**/*",
+      "renderer/**/*",
+      "assets/**/*",
+      "package.json",
+      "README.md"
+    ],
+    "directories": {
+      "output": "dist"
+    },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Utility",
       "desktop": {
         "entry": {
@@ -38,9 +52,17 @@
         }
       }
     },
-    "win": {"target": ["nsis", "portable"]},
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.productivity",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Alex Dictate needs microphone access to transcribe your voice.",
