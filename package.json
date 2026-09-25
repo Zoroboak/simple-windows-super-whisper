@@ -22,7 +22,7 @@
   "dependencies": {},
   "devDependencies": {
     "electron": "43.2.0",
-    "electron-builder": "^26.0.12"
+    "electron-builder": "26.15.3"
   },
   "build": {
     "appId": "com.zoroboak.AlexDictate",
@@ -50,13 +50,15 @@
           "Comment": "Voice dictation in any application",
           "StartupWMClass": "Alex Dictate"
         }
-      }
+      },
+      "icon": "assets/icon.png"
     },
     "win": {
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "icon": "assets/icon.png"
     },
     "mac": {
       "target": [
@@ -67,7 +69,8 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Alex Dictate needs microphone access to transcribe your voice.",
         "NSAppleEventsUsageDescription": "Alex Dictate uses accessibility automation to paste transcribed text into the active application."
-      }
+      },
+      "icon": "assets/icon.png"
     },
     "protocols": [
       {
