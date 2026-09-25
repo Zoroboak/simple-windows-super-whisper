@@ -1,5 +1,4 @@
 const fs = require('fs');
-const path = require('path');
 const { splitWavBuffer } = require('./audio');
 const { routeById } = require('./catalog');
 
@@ -93,10 +92,7 @@ async function fetchWithTimeout(url, options, timeoutMs) {
 }
 
 function openRouterBody(route, wavBuffer, state) {
-  const body = {
-    model: route.model,
-    input_audio: { data: wavBuffer.toString('base64'), format: 'wav' }
-  };
+  const body = { model: route.model, input_audio: { data: wavBuffer.toString('base64'), format: 'wav' } };
   const language = state.settings.language;
   if (language && language !== 'auto') body.language = language;
   const terms = dictionaryTerms(state.dictionary);
@@ -105,10 +101,7 @@ function openRouterBody(route, wavBuffer, state) {
   if (terms.length) {
     body.provider = { options: {
       groq: { prompt },
-      azure: {
-        phraseList: { phrases: terms },
-        enhancedMode: { modelOptions: { transcribeStyle: 'clean' } }
-      }
+      azure: { phraseList: { phrases: terms }, enhancedMode: { modelOptions: { transcribeStyle: 'clean' } } }
     } };
   }
   return body;
@@ -146,13 +139,27 @@ async function transcribeMultipartSegment(route, apiKey, wavBuffer, state) {
   if (prompt) form.append('prompt', prompt);
   form.append('response_format', 'json');
   const res = await fetchWithTimeout(`${route.baseUrl.replace(/\/$/, '')}/audio/transcriptions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: form
+    method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form
   }, Number(route.requestTimeoutMs || 30000));
   const raw = await res.text();
   const data = parseResponseText(raw, res);
   return { text: data.text, costUsd: null, upstream: route.name, generationId: null };
+}
+
+async function transcribeMistralSegment(route, apiKey, wavBuffer, state) {
+  const form = new FormData();
+  form.append('file', new Blob([wavBuffer], { type: 'audio/wav' }), 'dictation.wav');
+  form.append('model', route.model);
+  const language = state.settings.language;
+  if (language && language !== 'auto') form.append('language', language);
+  const terms = dictionaryTerms(state.dictionary);
+  if (terms.length) form.append('context_bias', JSON.stringify(terms.slice(0, 100)));
+  const res = await fetchWithTimeout(`${route.baseUrl.replace(/\/$/, '')}/audio/transcriptions`, {
+    method: 'POST', headers: { Authorization: `Bearer ${apiKey}` }, body: form
+  }, Number(route.requestTimeoutMs || 30000));
+  const raw = await res.text();
+  const data = parseResponseText(raw, res);
+  return { text: data.text, costUsd: null, upstream: 'Mistral', generationId: null };
 }
 
 async function transcribeRoute(route, apiKey, audioPath, state) {
@@ -162,11 +169,11 @@ async function transcribeRoute(route, apiKey, audioPath, state) {
   const texts = [];
   let costUsd = 0;
   let upstream = null;
-  for (let index = 0; index < segments.length; index++) {
-    const part = segments[index];
-    const result = route.transport === 'openrouter-json'
-      ? await transcribeOpenRouterSegment(route, apiKey, part.buffer, state)
-      : await transcribeMultipartSegment(route, apiKey, part.buffer, state);
+  for (const part of segments) {
+    let result;
+    if (route.transport === 'openrouter-json') result = await transcribeOpenRouterSegment(route, apiKey, part.buffer, state);
+    else if (route.transport === 'mistral-multipart') result = await transcribeMistralSegment(route, apiKey, part.buffer, state);
+    else result = await transcribeMultipartSegment(route, apiKey, part.buffer, state);
     texts.push(result.text);
     if (Number.isFinite(result.costUsd)) costUsd += result.costUsd;
     if (result.upstream) upstream = result.upstream;
@@ -174,7 +181,7 @@ async function transcribeRoute(route, apiKey, audioPath, state) {
   return { text: postProcess(joinSegments(texts), state), segments: segments.length, costUsd: costUsd || null, upstream };
 }
 
-async function transcribeWithFallback(store, historyId) {
+async function transcribeWithFallback(store, historyId, options = {}) {
   const item = store.state.history.find(x => x.id === historyId);
   if (!item?.audioPath || !fs.existsSync(item.audioPath)) throw new Error('No existe el audio local para este dictado.');
   const chain = store.state.routing?.chain || [];
@@ -193,7 +200,7 @@ async function transcribeWithFallback(store, historyId) {
       continue;
     }
     credentialed += 1;
-    const cooldown = routeCooldown(route.id);
+    const cooldown = options.ignoreCooldown ? null : routeCooldown(route.id);
     if (cooldown) {
       cooldownSkipped += 1;
       store.addAttempt(historyId, {
@@ -228,7 +235,7 @@ async function transcribeWithFallback(store, historyId) {
 }
 
 module.exports = {
-  transcribeWithFallback, transcribeRoute, transcribeOpenRouterSegment, transcribeMultipartSegment,
+  transcribeWithFallback, transcribeRoute, transcribeOpenRouterSegment, transcribeMultipartSegment, transcribeMistralSegment,
   postProcess, applyDictionaryPrompt, dictionaryTerms, joinSegments,
   parseRetryAfter, cooldownForError, markRouteFailure, markRouteSuccess, routeCooldown, resetRouteHealth
 };
