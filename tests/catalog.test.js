@@ -2,3 +2,4 @@ const test=require('node:test');const assert=require('node:assert/strict');const
 test('balanced profile prioritizes paid route then free fallback',()=>{assert.equal(PROFILES.balanced.chain[0],'openrouter-mai2');assert.ok(PROFILES.balanced.chain.includes('groq-turbo'))});
 test('normalizeChain removes invalid and duplicate routes',()=>assert.deepEqual(normalizeChain(['groq-turbo','nope','groq-turbo','groq-large']),['groq-turbo','groq-large']));
 test('endpoint latency seconds are normalized to milliseconds',()=>assert.equal(endpointSummary({provider_name:'X',latency:0.25}).latencyMs,250));
+test('direct Mistral batch route is available but not forced into default profile',()=>{const {ROUTES}=require('../src/catalog');const r=ROUTES.find(x=>x.id==='mistral-voxtral-mini2');assert.ok(r);assert.equal(r.transport,'mistral-multipart');assert.equal(r.keyRef,'mistral');assert.ok(!PROFILES.balanced.chain.includes(r.id))});
