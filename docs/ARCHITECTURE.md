@@ -139,3 +139,10 @@ El hotkey se delega al portal XDG de Electron. Para pegar:
 `ydotool → wtype → clipboard-only`
 
 No se leen dispositivos de `/dev/input`.
+
+
+## Circuit breaker y latencia interactiva
+
+La cadena configurada sigue siendo la fuente de verdad. Una ruta que acaba de devolver `429`, `5xx`, timeout o error de red entra en un cooldown corto en memoria. Durante ese periodo se registra un intento `cooldown` y se salta al siguiente elemento de la cadena. Un éxito limpia inmediatamente el estado. El cooldown no se persiste entre reinicios y nunca elimina ni modifica el WAV local.
+
+Los timeouts de dictado son deliberadamente más cortos que los límites máximos del proveedor para priorizar interacción: un proveedor lento debe ceder paso al fallback antes de bloquear el flujo de trabajo.
