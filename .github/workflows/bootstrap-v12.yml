@@ -1,0 +1,42 @@
+name: Bootstrap Alex Dictate v1.2
+
+on:
+  push:
+    branches: [alex-dictate-v1.1]
+    paths:
+      - ".bootstrap-v12/**"
+      - ".github/workflows/bootstrap-v12.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct v1.2 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap-v12/patch.* | base64 -d | gzip -dc > /tmp/alex-v12.patch
+          patch --dry-run -p4 < /tmp/alex-v12.patch
+          patch -p4 < /tmp/alex-v12.patch
+          rm -rf .bootstrap-v12
+
+      - name: Validate source
+        run: |
+          npm install --no-audit --no-fund
+          npm run check
+          npm test
+          bash -n scripts/setup-kde-wayland.sh
+
+      - name: Commit v1.2 product experience
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: Alex Dictate v1.2 product experience" || exit 0
+          git push
