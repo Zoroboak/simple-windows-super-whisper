@@ -21,7 +21,6 @@ let currentHotkey = null;
 let cancelShortcutRegistered = false;
 let liveSocket = null;
 let liveText = '';
-let liveAuthEnabled = false;
 let liveInsertBuffer = '';
 let liveInsertTimer = null;
 let liveInsertChain = Promise.resolve();
@@ -36,17 +35,6 @@ function handleExternalArgs(argv = []) {
 
 app.on('second-instance', (_event, argv) => handleExternalArgs(argv));
 app.on('open-url', (event, url) => { event.preventDefault(); handleExternalArgs([url]); });
-
-function installLiveAuthHook() {
-  if (liveAuthEnabled) return;
-  liveAuthEnabled = true;
-  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['wss://api.mistral.ai/*'] }, (details, callback) => {
-    const key = store?.getSecret('mistral');
-    const headers = { ...details.requestHeaders };
-    if (key) headers.Authorization = `Bearer ${key}`;
-    callback({ requestHeaders: headers });
-  });
-}
 
 function queueLiveInsertion(delta) {
   if (store.state.settings.insertionMode !== 'live-experimental' || !store.state.settings.autoPaste || !delta) return;
@@ -68,11 +56,14 @@ function startLivePreview() {
     overlaySend('overlay:live-text', { text: '', warning: 'Realtime desactivado: falta API key de Mistral.' });
     return;
   }
-  installLiveAuthHook();
   liveText = '';
   liveInsertBuffer = '';
   const model = 'voxtral-mini-transcribe-realtime-2602';
-  const ws = new net.WebSocket(`wss://api.mistral.ai/v1/audio/transcriptions/realtime?model=${model}`);
+  const key = store.getSecret('mistral');
+  const ws = new net.WebSocket(
+    `wss://api.mistral.ai/v1/audio/transcriptions/realtime?model=${model}`,
+    { headers: { Authorization: `Bearer ${key}` } }
+  );
   liveSocket = ws;
   ws.onopen = () => {
     ws.send(JSON.stringify({ type: 'session.update', session: {
@@ -239,7 +230,11 @@ app.whenReady().then(async () => {
   store = new Store();
   store.recoverInterrupted();
   store.cleanupCompletedAudio();
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb) => cb(permission === 'media'));
+  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details = {}) => {
+    if (permission !== 'media') return cb(false);
+    const types = details.mediaTypes || [];
+    cb(!types.includes('video') && (types.length === 0 || types.includes('audio')));
+  });
   try { app.setAsDefaultProtocolClient('alex-dictate'); } catch (_) {}
   createOverlay(); updateTray = createTray();
   try { registerMainHotkey(store.state.settings.hotkey); } catch (_) { setTimeout(() => createSettingsWindow(), 350); }
