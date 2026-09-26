@@ -1,0 +1,85 @@
+name: Validate and package
+on:
+  push:
+    branches: [master, alex-dictate-v1.1]
+    paths-ignore: ['.delivery/**', '.github/workflows/delivery.yml']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: alex-build-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci --no-audit --no-fund
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - run: npm run check
+      - run: npm test
+      - name: Real Electron smoke (Linux, fake microphone)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:electron
+      - name: Build installers and update metadata
+        run: npm run dist
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Collect installable files only
+        shell: bash
+        run: |
+          mkdir -p release-files
+          find dist -maxdepth 1 -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' -o -name 'latest*.yml' -o -name '*.blockmap' \) -exec cp {} release-files/ \;
+          test -n "$(ls -A release-files)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alex-dictate-${{ matrix.os }}
+          path: release-files/*
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always() && runner.os == 'Linux'
+        with:
+          name: electron-qa
+          path: qa/*
+          if-no-files-found: warn
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: alex-dictate-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish validated version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          tag="v$version"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Version already published; assets are immutable. Bump package.json for a new release."
+            exit 0
+          fi
+          git archive --format=zip --prefix="alex-dictate-$version/" HEAD > "release-assets/Alex-Dictate-$version-source.zip"
+          (cd release-assets && sha256sum * > SHA256SUMS.txt)
+          mapfile -d '' files < <(find release-assets -maxdepth 1 -type f -print0)
+          gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --title "Alex Dictate $tag" --notes-file docs/RELEASE-NOTES.md --latest

@@ -1,211 +1,79 @@
-# Simple Windows Super Whisper
+# Alex Dictate · 1.2
 
-A simple desktop application that provides instant voice-to-text transcription using OpenAI's Whisper API, specifically enhanced for developers working with AI tools like Cursor, Warp, GitHub Copilot, and other AI assistants.
+Dicta en tus aplicaciones con un atajo. Aplicación de escritorio para **Kubuntu/KDE, Windows y macOS**, con configuración guiada, audio recuperable, proveedores elegidos por ti y novedades desde la interfaz.
 
-## Table of Contents
+## Instalar (sin programar)
 
-- [Overview](#overview)
-- [Features](#features)
-- [Quick Start Guide](#quick-start-guide)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Troubleshooting](#troubleshooting)
-- [Advanced Configuration](#advanced-configuration)
-- [Security Notes](#security-notes)
-- [Credits](#credits)
-- [License](#license)
+Abre **[la última versión publicada](https://github.com/Zoroboak/simple-windows-super-whisper/releases/latest)** y descarga tu instalador:
 
-## Overview
+| Sistema | Archivo recomendado | Primer arranque |
+|---|---|---|
+| Kubuntu/Ubuntu x64 | `.deb` | Ábrelo con Discover o el instalador de paquetes. Inicia Alex Dictate desde el menú. |
+| Linux x64 portable | `.AppImage` | Propiedades → Permisos → permitir ejecutar. Guarda la AppImage en una carpeta permanente. |
+| Windows x64 | `Setup.exe` | Ejecuta el instalador. La edición portable no se actualiza en sitio. |
+| macOS Apple Silicon | `arm64.dmg` | Arrastra Alex Dictate a Aplicaciones y autoriza Micrófono/Accesibilidad. |
 
-Simple Windows Super Whisper is built to provide seamless, real-time transcription services directly on your Windows desktop. Ideal for developers and professionals seeking efficiency, this tool ensures swift voice-to-text conversion utilizing state-of-the-art AI technology.
+Esta distribución no incluye certificados comerciales de firma. Windows/macOS pueden solicitar confirmación o bloquear inicialmente una aplicación desconocida. Descarga solo de este repositorio; no desactives las protecciones globales del equipo. En Mac usa la excepción individual de Privacidad y seguridad tras comprobar el origen. Los artefactos actuales de Mac son **Apple Silicon**, no una compilación Intel.
 
-## Features
+### Tus primeros pasos
 
-- 🎤 One-click voice recording using `Ctrl + Space`
-- 📝 Real-time visualization of waveform
-- ⚡ Instantaneous transcription with clipboard copying
-- 🔑 Global hotkey support for seamless operation
-- 🎨 Sleek and modern design
+1. **Gratis** en el asistente para empezar con una clave de Groq, o **Premium equilibrado** si ya usas saldo de OpenRouter. Los enlaces para crear las claves están dentro de la aplicación.
+2. Prueba el micrófono durante 5 segundos. La prueba es local: no sube ni guarda audio. Elige idioma/micrófono en Ajustes cuando sea necesario.
+3. Prueba el dictado en el cuadro de Inicio. El atajo predeterminado es `Ctrl + Shift + Espacio` en Linux/Windows y `Cmd + Shift + Espacio` en Mac. Pulsar una vez inicia; otra termina.
+4. En **KDE/Wayland**, autoriza el atajo cuando KDE lo solicite. Si falta el pegado, pulsa **Preparar ahora**: el asistente abre una terminal para instalar/configurar ydotoold con tu consentimiento. Puede requerir cerrar sesión una vez.
 
-## Quick Start Guide
+Habla manteniendo el cursor en el campo de destino. Alex Dictate pega en el **campo activo al terminar**: no garantiza encontrar o restaurar un campo si cambias de aplicación, escritorio o documento durante el dictado. Tampoco elude campos protegidos ni permisos elevados.
 
-### 1. Get OpenAI API Key
+## Qué configuración elegir
 
-1. Sign up or log in on [OpenAI](https://platform.openai.com/signup).
-2. Navigate to the [API Keys](https://platform.openai.com/api-keys) section.
-3. Generate and copy your new secret API key.
-4. Securely store your API key by adding it to a `.env` file in the app directory:
+**Gratis:** Groq Whisper Turbo → Groq Whisper Large. Solo es gratuito dentro de la cuota de tu cuenta. Ambas rutas comparten proveedor y pueden compartir límites; no son redundancia independiente ante una caída de Groq.
 
-   ```
-   OPENAI_API_KEY=your_api_key_here
-   ```
+**Premium equilibrado:** OpenRouter MAI-Transcribe 2 → OpenRouter Whisper Large → Groq Turbo → Groq Large. El uso premium consume saldo. Es una configuración propuesta, no una garantía de ser la más precisa para todas las voces.
 
-### 2. Installation
+**Precisión prioritaria / Personalizado:** otras rutas STT del catálogo y los proveedores directos. Mistral batch y OpenAI directo son opcionales. Los precios estáticos son orientativos de septiembre de 2026 y pueden cambiar.
 
-#### Prerequisites
+En **Proveedores**, añade, sube, baja o quita rutas y pulsa **Guardar cadena**. El orden se conserva. **Nunca se comparan proveedores ni se hacen benchmarks antes de un dictado.** El catálogo solo se consulta al pulsar **Actualizar catálogo**. Las estadísticas locales proceden de tus intentos, no de pruebas adicionales de pago.
 
-- Python 3.8+
-- Windows 10+
+OpenRouter STT no aplica `provider.order/only/ignore`: la prioridad que decides es entre rutas/modelos o APIs directas, no entre hosts internos de un mismo modelo. Los endpoints internos se muestran solo como referencia.
 
-#### Simple Installation
+## Texto en directo
 
-1. Download the release from [Releases](https://github.com/yourusername/windows-whisper/releases).
-2. Extract to your desired location.
-3. Add your API key to `.env` as described.
-4. Run `Windows Whisper.exe`.
+Activa Mistral en Ajustes tras guardar su clave. El audio se conserva localmente y, por separado, se transmite para mostrar texto provisional en la barra. Tiene consumo **adicional** al proveedor de la transcripción final. Sin Mistral, el dictado normal sigue funcionando.
 
-#### Developer Installation
+**Final seguro** es el modo recomendado: previsualización opcional y un pegado final. **Escritura en vivo** es experimental: inserta fragmentos provisionales y deja el resultado completo en el portapapeles; no intenta borrar o reescribir de forma destructiva lo ya insertado. No equivale a un IME nativo con letras fantasma dentro de cualquier aplicación.
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/windows-whisper.git
-   cd windows-whisper
-   ```
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Launch via:
-   ```bash
-   python main.py
-   ```
+## Audio que puedes recuperar
 
-## Usage
+La captura escribe PCM16 mono en disco y confirma cada fragmento. Al terminar produce WAV y después llama a la cadena STT. Si activas realtime, sus fragmentos se envían después de la escritura local, durante la captura.
 
-1. **Start Recording**
-   - Press `Ctrl + Space` or use the tray icon.
+Un fallo de red conserva el audio en Historial. Puedes **Reintentar**, **Copiar texto**, **Guardar audio** o **Eliminar** con confirmación. Reintentar desde Historial no pega inesperadamente en otra aplicación. **Guardar sin enviar**, desde la bandeja, conserva el audio en vez de destruirlo.
 
-2. **During Recording**
-   - Ensure clear enunciation.
+Se recuperan capturas interrumpidas y metadatos dañados cuando quedan archivos válidos. El límite actual por captura es 30 minutos. Los fallidos/pendientes/cancelados no se borran automáticamente; los completados tienen retención configurable. No es una garantía contra avería del disco, falta de espacio, fallos del sistema o muestras no recibidas antes de un apagado.
 
-3. **Post Recording**
-   - Automatically copies text to clipboard.
+## Privacidad y seguridad
 
-## Troubleshooting
+Sin servidor de Alex Dictate ni telemetría externa de uso. Las claves se cifran con el llavero del sistema; Linux rechaza `basic_text`. KWallet debe estar disponible y desbloqueado. Los **audios y transcripciones locales no están cifrados** por la aplicación; usa cifrado de disco si lo necesitas. Los proveedores cloud reciben el audio y aplican sus propias políticas. Actualizaciones, comprobación manual de claves y catálogo consultan sus servicios correspondientes.
 
-- **API Key Errors**: Validate your API deployment in `.env`.
-- **Recording Issues**: Ensure mic accessibility.
+Los renderers están aislados, no tienen Node y el proceso principal valida quién puede usar cada operación IPC. No se registra todo el teclado ni se necesita ejecutar la app como root. El asistente Linux concede, cuando hace falta, acceso específico a uinput; no añade al usuario al grupo general `input`.
 
-## Advanced Configuration
+## Actualizaciones y mantenimiento
 
-Modify settings through `config.py` or `.env`.
+En Ajustes puedes comprobar novedades. El icono de regalo aparece cuando hay una versión disponible. La instalación requiere una acción tuya, no se ejecuta al salir ni mientras estás grabando/procesando. Se consulta GitHub al iniciar y cada seis horas solo si la opción está activada y no hay dictado activo.
 
-## Security Notes
+NSIS/DEB/AppImage tienen soporte de actualización desde la interfaz, sujeto a permisos del SO. Windows portable y la edición **macOS sin Developer ID** abren la descarga oficial. Para habilitar actualización nativa en Mac, el mantenedor debe firmar y notarizar futuras compilaciones. Ver [UPDATES](docs/UPDATES.md).
 
-- Keep API keys confidential.
-- Rotate keys regularly.
+## Desarrollo y pruebas
 
-## Credits
+Node 22. Instala dependencias con `npm ci` cuando esté presente el lockfile (o `npm install` para la copia fuente sin lock). Después:
 
-Developed with Cursor IDE and Anthropic's Claude support.
+```bash
+npm run check
+npm test
+npm start
+# En Linux con un servidor gráfico o Xvfb:
+npm run test:electron
+# Instaladores del sistema actual:
+npm run dist
+```
 
-## License
-
-Openly available under the MIT License.
-
----
-
-# Simple Windows Super Whisper
-
-Una aplicación de escritorio sencilla que proporciona transcripción instantánea de voz a texto utilizando la API Whisper de OpenAI, específicamente mejorada para desarrolladores que trabajan con herramientas de IA como Cursor, Warp, GitHub Copilot y otros asistentes de IA.
-
-## Índice
-
-- [Visión General](#visión-general)
-- [Características](#características)
-- [Guía Rápida](#guía-rápida)
-- [Instalación](#instalación)
-- [Uso](#uso)
-- [Solución de Problemas](#solución-de-problemas)
-- [Configuración Avanzada](#configuración-avanzada)
-- [Notas de Seguridad](#notas-de-seguridad)
-- [Créditos](#créditos)
-- [Licencia](#licencia)
-
-## Visión General
-
-Simple Windows Super Whisper está diseñado para proporcionar servicios de transcripción en tiempo real directamente en tu escritorio de Windows. Ideal para desarrolladores y profesionales que buscan eficiencia, esta herramienta asegura una rápida conversión de voz a texto utilizando tecnología de IA de última generación.
-
-## Características
-
-- 🎤 Grabación de voz con un clic usando `Ctrl + Espacio`
-- 📝 Visualización en tiempo real de la forma de onda
-- ⚡ Transcripción instantánea con copia al portapapeles
-- 🔑 Soporte de teclas de acceso rápido para una operación sin problemas
-- 🎨 Diseño moderno y elegante
-
-## Guía Rápida
-
-### 1. Obtener clave API de OpenAI
-
-1. Regístrate o inicia sesión en [OpenAI](https://platform.openai.com/signup).
-2. Ve a la sección de [Claves API](https://platform.openai.com/api-keys).
-3. Genera y copia tu nueva clave API secreta.
-4. Guarda tu clave API en un archivo `.env` en el directorio de la aplicación:
-
-   ```
-   OPENAI_API_KEY=your_api_key_here
-   ```
-
-### 2. Instalación
-
-#### Requisitos Previos
-
-- Python 3.8+
-- Windows 10+
-
-#### Instalación Sencilla
-
-1. Descarga la versión desde [Releases](https://github.com/yourusername/windows-whisper/releases).
-2. Extrae en tu ubicación deseada.
-3. Añade tu clave API al `.env` como se describe.
-4. Ejecuta `Windows Whisper.exe`.
-
-#### Instalación para Desarrolladores
-
-1. Clona el repositorio:
-   ```bash
-   git clone https://github.com/yourusername/windows-whisper.git
-   cd windows-whisper
-   ```
-2. Instala dependencias:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Inicia con:
-   ```bash
-   python main.py
-   ```
-
-## Uso
-
-1. **Iniciar Grabación**
-   - Presiona `Ctrl + Espacio` o utiliza el ícono de bandeja.
-
-2. **Durante la Grabación**
-   - Asegúrate de una pronunciación clara.
-
-3. **Después de la Grabación**
-   - Copia automáticamente el texto al portapapeles.
-
-## Solución de Problemas
-
-- **Errores de Clave API**: Valida el despliegue de tu API en `.env`.
-- **Problemas de Grabación**: Asegura la accesibilidad del micrófono.
-
-## Configuración Avanzada
-
-Modifica configuraciones a través de `config.py` o `.env`.
-
-## Notas de Seguridad
-
-- Mantén las claves API confidenciales.
-- Rota tus claves regularmente.
-
-## Créditos
-
-Desarrollado con el soporte de Cursor IDE y Claude de Anthropic.
-
-## Licencia
-
-Disponible abiertamente bajo la Licencia MIT.
+CI valida sintaxis, pruebas del núcleo y empaqueta Linux/Windows/macOS. En Linux además abre Electron de verdad con micrófono sintético, verifica PCM/WAV, IPC y recuperación ante falta de clave. Esto no sustituye pruebas de micrófonos físicos ni permisos/pegado en KDE/macOS/Windows reales. Documentación: [guía](docs/USER-GUIDE.md), [arquitectura](docs/ARCHITECTURE.md), [proveedores](docs/PROVIDERS.md), [auditoría del encargo](docs/REQUEST-AUDIT.md), [validación](docs/VALIDATION.md).
