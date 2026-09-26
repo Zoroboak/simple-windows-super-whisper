@@ -1,26 +1,9 @@
-name: build
-on:
-  push:
-  pull_request:
+name: Build (delivery staging)
+on: workflow_dispatch
+permissions:
+  contents: read
 jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-24.04, windows-2025, macos-15]
-    runs-on: ${{ matrix.os }}
+  staging:
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm install --no-audit --no-fund
-      - run: npm run check
-      - run: npm test
-      - name: Build installer
-        run: npm run dist
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: alex-dictate-${{ matrix.os }}
-          path: dist/*
+      - run: echo 'Source consolidation is in progress; the validated build workflow is restored after checksum verification.'

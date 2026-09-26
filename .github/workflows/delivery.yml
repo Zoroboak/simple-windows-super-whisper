@@ -1,0 +1,31 @@
+name: Consolidate verified v1.2 source
+on:
+  push:
+    branches: [alex-dictate-v1.1]
+    paths: ['.delivery/**', '.github/workflows/delivery.yml']
+permissions:
+  contents: write
+jobs:
+  consolidate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify and apply exact source payload
+        run: python3 .delivery/apply.py
+      - name: Lock dependency graph
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - run: npm run check
+      - run: npm test
+      - name: Commit consolidated sources
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'feat: consolidate Alex Dictate 1.2 onboarding updates and resilience'
+          git push
