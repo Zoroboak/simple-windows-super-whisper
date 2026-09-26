@@ -1,4 +1,4 @@
-# Proveedores y modelos
+# Proveedores y modelos · Alex Dictate 1.2
 
 ## Objetivo
 
@@ -33,6 +33,10 @@ Los transportes viven en `src/providers.js`.
 
 - `whisper-large-v3-turbo`
 - `whisper-large-v3`
+
+### Mistral directo
+
+- `voxtral-mini-latest` (Voxtral Mini Transcribe 2)
 
 ### OpenAI directo
 
@@ -90,3 +94,18 @@ Los costes en `catalog.js` son orientativos para UX. La fuente real debe seguir 
 - OpenRouter global: máxima disponibilidad.
 - OpenRouter EU: se usa `eu.openrouter.ai`; una ruta sin endpoint europeo falla limpiamente y pasa al siguiente fallback.
 - Groq/Mistral: aplicar ZDR y políticas de cuenta/workspace directamente en sus paneles cuando sean necesarias.
+
+
+## Métricas de uso local
+
+Alex Dictate calcula las estadísticas por ruta a partir del historial real: intentos, porcentaje de éxito, latencia media y coste reportado cuando el proveedor lo devuelve. Estas métricas son informativas y nunca cambian la cadena automáticamente.
+
+## Recomendaciones de UX
+
+La interfaz no obliga a conocer nombres de modelos. Mantener tres decisiones de producto:
+
+- **Gratis:** Groq Whisper Turbo.
+- **Premium equilibrado:** MAI-Transcribe 2 + fallbacks.
+- **Máxima calidad:** GPT Transcribe / MAI + fallbacks.
+
+Las rutas avanzadas siguen disponibles para quien quiera personalizar el orden, pero no deben convertirse en una barrera durante el onboarding.

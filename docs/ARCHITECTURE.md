@@ -1,148 +1,32 @@
-# Arquitectura de Alex Dictate 1.1
+# Arquitectura 1.2
 
-## Principios
+Electron 43.2.0 / Node 22. Proceso principal con Store, proveedores, IPC autorizado, atajos, actualización e integración de escritorio. Dos renderers sandboxed: configuración y overlay. No se carga código remoto.
 
-1. **El audio local manda.** La red nunca es la única copia de una grabación.
-2. **La cadena es determinista.** No se benchmarkea antes de cada uso.
-3. **El overlay no roba el foco.** El texto vuelve a la aplicación original.
-4. **Wayland se trata como primera clase.** Hotkey y pegado son problemas distintos.
-5. **Las claves no llegan al renderer.** Solo se expone si una clave está o no guardada.
+## Captura y durabilidad
 
-## Capas
+AudioWorklet procesa PCM16LE mono a 16 kHz con remuestreo con estado; cada fragmento se envía por IPC invoke y recibe confirmación de escritura. Escrituras síncronas pequeñas al archivo PCM, fsync aproximadamente cada 2 segundos, memoria acotada a 32 fragmentos pendientes. Esta elección evita acumular audio en RAM, pero un disco bloqueado puede retrasar el main: se aborta conservando lo recuperable. 30 minutos máximo por captura (~57,6 MB PCM).
 
-### Electron main
+La finalización confirma todos los fragmentos, produce WAV atómico y guarda los metadatos **antes de borrar el PCM**. Estado JSON escrito a temporal, fsync, copia .bak y rename. Recuperación de parciales y WAV huérfanos por UUID. Cancelar equivale a guardar sin enviar; Eliminar es una acción explícita con confirmación de la UI. Los fallidos nunca se limpian por antigüedad.
 
-`src/main.js`
+Estados: idle → starting → recording → stopping → processing → idle. No se permite grabar y reintentar el historial simultáneamente. Fallos del micrófono, almacenamiento, renderer y proveedor son distintos. Un pegado fallido no invalida una transcripción correcta. El historial puede reintentarse sin pegar automáticamente en la ventana de configuración.
 
-- ciclo de vida
-- single instance
-- protocolo `alex-dictate://`
-- tray
-- registro transaccional de hotkey
-- cancelación temporal
-- WebSocket realtime
-- routing/fallback
-- inyección final
+## Proveedores
 
-### Audio
+La cadena guardada se clona al iniciar el procesamiento. No cambia por editar ajustes a mitad del envío. Timeouts cubren cabeceras **y cuerpo**; HTTP no redirige claves a destinos alternativos. JSON y texto se validan. Segmentación con corte de baja energía y máximo estricto, sin perder muestras; puede dividir palabras si no hay silencios. Errores dejan registro por ruta y pausa temporal; reintento manual ignora la pausa.
 
-`src/audio.js`
+Realtime Mistral es una vía opcional independiente: PCM ya escrito → WebSocket con Authorization por conexión. Se guardan inicialmente hasta 10 segundos pendientes de session.created; la cola se limita. Se espera el cierre del protocolo hasta 4 segundos al terminar; si falla, se conserva el audio para batch. No hay reconexión ilimitada ni garantía de corrección por voz del texto provisional.
 
-- WAV PCM16 mono
-- recuperación de `.pcm.partial`
-- parsing WAV
-- segmentación por silencio/energía
+## Seguridad y escritorio
 
-El renderer genera PCM s16le. El main lo escribe en bloques. Al detener:
+- IPC validado por webContents y frame principal; ajustes y operaciones de captura tienen permisos diferentes.
+- renderers sandboxed, contextIsolation, sin Node; nuevas ventanas y navegación remota denegadas.
+- CSP script self; estilos inline permitidos para atributos de la interfaz; texto externo escapado.
+- safeStorage: rechaza backend Linux basic_text; llavero desbloqueado necesario.
+- audio/transcripciones NO cifrados por la app; directorio privado y archivos 0600 nuevos.
+- atajo transaccional: nuevo registro → persistencia → retirar antiguo; rollback si falla.
+- KDE: GlobalShortcuts portal; pegado opcional ydotoold con socket por usuario. El instalador solicita permisos y grupo específico para uinput, no grupo input general.
+- Sin garantía de recuperar el foco de un campo ajeno: se pega en el destino activo. Live insertion experimental no modifica destructivamente texto previo.
 
-`UUID.pcm.partial → UUID.wav → queued → processing → done/failed`
+## Actualizaciones
 
-Un crash en `recording` puede recuperar PCM. Un crash en `processing` conserva el WAV y lo vuelve a `queued`.
-
-### Routing
-
-`src/catalog.js` contiene el catálogo local de rutas y perfiles.
-
-`src/providers.js` contiene transportes:
-
-- `openrouter-json`
-- `openai-multipart`
-
-La cadena persistida en `state.routing.chain` es la fuente de verdad. Una ruta sin credencial se marca `skipped` y se pasa a la siguiente sin contabilizarlo como caída del proveedor.
-
-### OpenRouter
-
-La consulta manual del catálogo utiliza:
-
-`GET /api/v1/models/:author/:slug/endpoints`
-
-Se guarda una instantánea en `state.routing.catalog`. Nunca se refresca automáticamente durante un dictado.
-
-Para STT, OpenRouter actualmente realiza su propio routing interno. Alex Dictate no finge controlar `provider.only/order` mientras esos controles no sean aplicados por `/audio/transcriptions`.
-
-### Store
-
-`src/store.js`
-
-Estado JSON atómico mediante `state.json.tmp → state.json`.
-
-Se mantiene JSON deliberadamente porque es una aplicación local de un único proceso y evita una dependencia SQLite nativa para tres sistemas. Si el historial escala a decenas de miles de entradas, el contrato del store permite sustituirlo por SQLite sin cambiar renderer/proveedores.
-
-Las estadísticas se recalculan desde historial para evitar dobles conteos por reintentos.
-
-### Overlay
-
-`renderer/overlay.*`
-
-- ventana transparente
-- `focusable=false`
-- waveform
-- ghost text de dos líneas
-- timer
-- no contiene secretos
-
-### Settings renderer
-
-`renderer/app.js`
-
-- Inicio
-- Historial
-- Diccionario
-- Snippets
-- Proveedores
-- Ajustes
-- Diagnóstico
-
-## Hotkey transaccional
-
-Al cambiar de hotkey:
-
-1. se intenta registrar la nueva combinación sin desregistrar primero la anterior;
-2. solo cuando la nueva funciona se elimina la antigua;
-3. si falla, la antigua sigue operativa.
-
-Esto evita quedarse sin acceso global por una combinación ocupada o un problema del portal Wayland.
-
-## Micrófono
-
-El `deviceId` se guarda en settings. Al empezar:
-
-1. se intenta el dispositivo exacto;
-2. si ya no existe, se abre `default`;
-3. el overlay informa del fallback.
-
-Esto cubre USB, dock y Bluetooth desconectados entre sesiones.
-
-## Segmentación
-
-OpenRouter tiene un upstream timeout corto para STT. Las rutas OpenRouter se segmentan alrededor de 42 s.
-
-El corte no es fijo: se busca un valle de RMS en una ventana próxima al límite para reducir la probabilidad de partir una palabra. Groq directo usa segmentos mucho mayores.
-
-## Inserción
-
-### Final seguro
-
-1. overlay realtime opcional
-2. transcripción final
-3. clipboard
-4. pegado una sola vez
-
-### Live experimental
-
-Los deltas realtime se agrupan brevemente y se pegan incrementalmente. Al terminar, la transcripción final se copia al portapapeles en lugar de duplicarla.
-
-## Wayland
-
-El hotkey se delega al portal XDG de Electron. Para pegar:
-
-`ydotool → wtype → clipboard-only`
-
-No se leen dispositivos de `/dev/input`.
-
-
-## Circuit breaker y latencia interactiva
-
-La cadena configurada sigue siendo la fuente de verdad. Una ruta que acaba de devolver `429`, `5xx`, timeout o error de red entra en un cooldown corto en memoria. Durante ese periodo se registra un intento `cooldown` y se salta al siguiente elemento de la cadena. Un éxito limpia inmediatamente el estado. El cooldown no se persiste entre reinicios y nunca elimina ni modifica el WAV local.
-
-Los timeouts de dictado son deliberadamente más cortos que los límites máximos del proveedor para priorizar interacción: un proveedor lento debe ceder paso al fallback antes de bloquear el flujo de trabajo.
+El actualizador tiene política por formato/firma, cola deduplicada y bloqueo de instalación si hay operación activa. El estado de actualización no re-renderiza formularios en edición. Ver UPDATES.md y VALIDATION.md.

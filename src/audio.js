@@ -39,6 +39,7 @@ function parseWav(buffer) {
     const body = offset + 8;
     if (body + size > buffer.length) break;
     if (id === 'fmt ') {
+      if (size < 16) throw new Error('Cabecera WAV truncada.');
       fmt = {
         format: buffer.readUInt16LE(body),
         channels: buffer.readUInt16LE(body + 2),
@@ -51,7 +52,7 @@ function parseWav(buffer) {
     }
     offset = body + size + (size % 2);
   }
-  if (!fmt || !data || fmt.format !== 1 || fmt.bitsPerSample !== 16 || fmt.channels !== 1) {
+  if (!fmt || !data || fmt.format !== 1 || fmt.bitsPerSample !== 16 || fmt.channels !== 1 || fmt.sampleRate < 8000 || fmt.sampleRate > 192000 || data.length % 2) {
     throw new Error('Alex Dictate espera WAV PCM16 mono.');
   }
   return { ...fmt, pcm: data };
@@ -64,7 +65,8 @@ function finalizePcmPartial(partialPath, wavPath, sampleRate = PCM_SAMPLE_RATE) 
   const minBytes = Math.round(sampleRate * 2 * 0.12);
   if (pcm.length < minBytes) throw new Error('El audio parcial recuperado es demasiado corto.');
   const tmp = `${wavPath}.tmp`;
-  fs.writeFileSync(tmp, createWavBuffer(pcm, sampleRate));
+  fs.writeFileSync(tmp, createWavBuffer(pcm, sampleRate), { mode: 0o600 });
+  const fd = fs.openSync(tmp, 'r+'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, wavPath);
   return { bytes: pcm.length, durationMs: Math.round(pcm.length / (sampleRate * 2) * 1000) };
 }
@@ -112,10 +114,11 @@ function splitWavBuffer(buffer, maxSeconds = 42, options = {}) {
   const cuts = [0];
   let cursor = 0;
   while (totalSamples - cursor > maxSamples) {
-    const target = cursor + maxSamples;
-    let cut = findSilenceCut(pcm, sampleRate, target, Number(options.searchSeconds || 4));
+    const halfSearch = Number(options.searchSeconds || 4) / 2;
+    const target = cursor + maxSamples - Math.floor(halfSearch * sampleRate);
+    let cut = Math.min(cursor + maxSamples, findSilenceCut(pcm, sampleRate, target, halfSearch));
     if (cut - cursor < minSamples) cut = Math.min(totalSamples, cursor + maxSamples);
-    if (totalSamples - cut < Math.min(minSamples, maxSamples / 2)) break;
+    cut = Math.max(cursor + 1, Math.min(cursor + maxSamples, cut));
     cuts.push(cut);
     cursor = cut;
   }

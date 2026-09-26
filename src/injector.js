@@ -1,19 +1,22 @@
 const { clipboard } = require('electron');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { windowsHide: true, ...opts });
     let out = '', err = '';
-    p.stdout?.on('data', d => out += d.toString());
-    p.stderr?.on('data', d => err += d.toString());
-    p.on('error', reject);
-    p.on('close', code => code === 0 ? resolve(out.trim()) : reject(new Error(`${cmd} terminó con ${code}: ${err.trim()}`)));
+    const timer = setTimeout(() => { p.kill(); reject(new Error(`${cmd}: tiempo de espera agotado.`)); }, 5000);
+    p.stdout?.on('data', d => out = (out + d.toString()).slice(-4000));
+    p.stderr?.on('data', d => err = (err + d.toString()).slice(-2000));
+    p.on('error', error => { clearTimeout(timer); reject(error); });
+    p.on('close', code => { clearTimeout(timer); code === 0 ? resolve(out.trim()) : reject(new Error(`${cmd} terminó con ${code}: ${err.trim()}`)); });
   });
 }
 
 async function commandExists(cmd) {
+  if (!/^[a-zA-Z0-9_.-]+$/.test(cmd)) return false;
   const probe = process.platform === 'win32' ? ['where.exe', [cmd]] : ['sh', ['-lc', `command -v ${cmd}`]];
   try { await run(probe[0], probe[1]); return true; } catch (_) { return false; }
 }
@@ -31,6 +34,10 @@ function uinputStatus() {
   return { exists, writable };
 }
 
+function socketPath() {
+  const own = path.join(process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.()}`, 'alex-dictate-ydotool.sock');
+  return fs.existsSync(own) ? own : process.env.YDOTOOL_SOCKET || '/tmp/.ydotool_socket';
+}
 async function pasteText(text) {
   clipboard.writeText(String(text ?? ''));
   const platform = process.platform;
@@ -47,7 +54,7 @@ async function pasteText(text) {
   const wayland = Boolean(process.env.WAYLAND_DISPLAY);
   if (wayland) {
     try {
-      await run('ydotool', ['key', '29:1', '47:1', '47:0', '29:0']);
+      await run('ydotool', ['key', '29:1', '47:1', '47:0', '29:0'], { env: { ...process.env, YDOTOOL_SOCKET: socketPath() } });
       return { method: 'ydotool' };
     } catch (_) {
       try {
@@ -77,13 +84,15 @@ async function diagnoseInjection() {
     tools.wtype = await commandExists('wtype');
     tools.xdotool = await commandExists('xdotool');
     const ui = uinputStatus();
+    let socketAccessible = false; try { fs.accessSync(socketPath(), fs.constants.R_OK | fs.constants.W_OK); socketAccessible = fs.statSync(socketPath()).isSocket(); } catch (_) {}
     ydotool = {
       installed: tools.ydotool,
       daemonInstalled: tools.ydotoold,
       daemonRunning: tools.ydotoold ? await processRunning('ydotoold') : false,
       uinputExists: ui.exists,
       uinputWritable: ui.writable,
-      ready: Boolean(tools.ydotool && tools.ydotoold && ui.exists && ui.writable && await processRunning('ydotoold'))
+      socket: socketPath(), socketAccessible,
+      ready: Boolean(tools.ydotool && socketAccessible && await processRunning('ydotoold'))
     };
   }
   return {
@@ -96,7 +105,7 @@ async function diagnoseInjection() {
     ydotool,
     recommendation: platform === 'linux' && wayland
       ? (ydotool?.ready
-        ? 'KDE/Wayland listo: hotkey vía XDG GlobalShortcuts y pegado vía ydotoold.'
+        ? 'Backend de pegado disponible. Comprueba el atajo y el pegado real en el cuadro de prueba.'
         : 'El hotkey usa XDG GlobalShortcuts. Para pegado automático ejecuta scripts/setup-kde-wayland.sh; si ydotool no queda listo, wtype/portapapeles siguen disponibles.')
       : 'La inyección utiliza automatización nativa del sistema.'
   };

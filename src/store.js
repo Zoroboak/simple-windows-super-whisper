@@ -1,16 +1,18 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { safeStorage, app } = require('electron');
 const { PCM_SAMPLE_RATE, finalizePcmPartial, pcmPartialPath, wavPath } = require('./audio');
 const { ROUTES, PROFILES, normalizeChain } = require('./catalog');
 
 class Store {
-  constructor() {
-    this.dir = app.getPath('userData');
+  constructor(options = {}) {
+    const electron = options.electron || require('electron');
+    this.safeStorage = electron.safeStorage; this.app = electron.app;
+    this.lastSync = new Map();
+    this.dir = options.directory || this.app.getPath('userData');
     this.file = path.join(this.dir, 'state.json');
     this.audioDir = path.join(this.dir, 'audio');
-    fs.mkdirSync(this.audioDir, { recursive: true });
+    fs.mkdirSync(this.audioDir, { recursive: true, mode: 0o700 });
     this.state = this.load();
   }
 
@@ -27,7 +29,9 @@ class Store {
         liveTargetDelayMs: 650,
         cleanupFillers: false,
         microphoneId: 'default',
-        openRouterRegion: 'global'
+        openRouterRegion: 'global',
+        onboardingComplete: false,
+        checkUpdatesAutomatically: true
       },
       routing: {
         profile: 'balanced',
@@ -39,7 +43,7 @@ class Store {
       dictionary: [],
       snippets: [],
       history: [],
-      schema: 2
+      schema: 3
     };
   }
 
@@ -50,7 +54,7 @@ class Store {
       ...parsed,
       settings: { ...base.settings, ...(parsed.settings || {}) },
       routing: { ...base.routing, ...(parsed.routing || {}) },
-      schema: 2
+      schema: 3
     };
     if (!parsed.routing && Array.isArray(parsed.providers)) {
       const legacy = parsed.providers.filter(x => x.enabled).sort((a,b) => Number(a.priority || 0) - Number(b.priority || 0)).map(x => x.id);
@@ -63,6 +67,11 @@ class Store {
     }
     next.routing.chain = normalizeChain(next.routing.chain);
     if (!next.routing.chain.length) next.routing.chain = [...PROFILES.balanced.chain];
+    if (typeof parsed.settings?.onboardingComplete !== 'boolean') {
+      next.settings.onboardingComplete = Boolean(
+        Object.keys(parsed.secrets || {}).length || (parsed.history || []).length
+      );
+    }
     delete next.providers;
     delete next.stats;
     return next;
@@ -77,13 +86,15 @@ class Store {
     } catch (e) {
       const backup = `${this.file}.corrupt-${Date.now()}`;
       try { fs.copyFileSync(this.file, backup); } catch (_) {}
-      return base;
+      try { return this.migrate(JSON.parse(fs.readFileSync(`${this.file}.bak`, 'utf8'))); } catch (_) { return base; }
     }
   }
 
   save() {
     const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(this.state, null, 2), { mode: 0o600 });
+    const fd = fs.openSync(tmp, 'r+'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    if (fs.existsSync(this.file)) fs.copyFileSync(this.file, `${this.file}.bak`);
     fs.renameSync(tmp, this.file);
   }
 
@@ -108,9 +119,9 @@ class Store {
         const r = byRoute[a.route] || (byRoute[a.route] = { attempts: 0, ok: 0, error: 0, latencyMsTotal: 0, latencySamples: 0, costUsd: 0, lastAt: null });
         r.attempts += 1;
         r[a.status] += 1;
-        if (Number.isFinite(Number(a.latencyMs))) { r.latencyMsTotal += Number(a.latencyMs); r.latencySamples += 1; }
+        if (a.latencyMs != null && Number.isFinite(Number(a.latencyMs))) { r.latencyMsTotal += Number(a.latencyMs); r.latencySamples += 1; }
         if (Number.isFinite(Number(a.costUsd))) r.costUsd += Number(a.costUsd);
-        r.lastAt = a.at || r.lastAt;
+        if (a.at && (!r.lastAt || a.at > r.lastAt)) r.lastAt = a.at;
       }
     }
     return Object.fromEntries(Object.entries(byRoute).map(([id, r]) => [id, {
@@ -126,19 +137,40 @@ class Store {
 
   publicState() {
     const copy = JSON.parse(JSON.stringify(this.state));
-    copy.secrets = Object.fromEntries(Object.keys(copy.secrets || {}).map(k => [k, true]));
+    copy.secrets = Object.fromEntries(Object.keys(copy.secrets || {}).map(k => [k, Boolean(this.getSecret(k))]));
+    copy.secureStorage = this.secureStatus();
     copy.stats = this.computedStats();
     copy.routeCatalog = ROUTES;
     copy.profiles = PROFILES;
     copy.routeStats = this.computedRouteStats();
+    copy.appVersion = this.app.getVersion();
     return copy;
   }
 
-  setSettings(patch) { this.state.settings = { ...this.state.settings, ...patch }; this.save(); }
+  setSettings(patch, { allowHotkey = false } = {}) {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('Ajustes inválidos.');
+    const next = { ...this.state.settings };
+    const bools = ['autoPaste', 'livePreview', 'cleanupFillers', 'onboardingComplete', 'checkUpdatesAutomatically'];
+    for (const [key, value] of Object.entries(patch)) {
+      if (bools.includes(key)) { if (typeof value !== 'boolean') throw new Error(`Valor inválido: ${key}`); next[key] = value; }
+      else if (key === 'hotkey' && allowHotkey) next[key] = String(value);
+      else if (key === 'keepCompletedAudioDays') { if (!Number.isInteger(value) || value < -1 || value > 3650) throw new Error('Retención: usa -1 (siempre) o un número entre 0 y 3650.'); next[key] = value; }
+      else if (key === 'liveTargetDelayMs') { if (!Number.isFinite(value) || value < 240 || value > 3000) throw new Error('Retardo inválido.'); next[key] = value; }
+      else if (key === 'language' && /^(auto|[a-z]{2})$/.test(value)) next[key] = value;
+      else if (key === 'microphoneId' && typeof value === 'string' && value.length <= 300) next[key] = value;
+      else if (key === 'insertionMode' && ['final-safe', 'live-experimental'].includes(value)) next[key] = value;
+      else if (key === 'openRouterRegion' && ['global', 'eu'].includes(value)) next[key] = value;
+      else if (key === 'liveProvider' && value === 'mistral') next[key] = value;
+      else throw new Error(`Ajuste no permitido: ${key}`);
+    }
+    const previous = this.state.settings; this.state.settings = next;
+    try { this.save(); } catch (e) { this.state.settings = previous; throw e; }
+  }
   setRouting(patch) {
     const profile = patch.profile ?? this.state.routing.profile;
     const chain = normalizeChain(patch.chain ?? this.state.routing.chain);
-    this.state.routing = { ...this.state.routing, ...patch, profile, chain: chain.length ? chain : [...PROFILES.balanced.chain] };
+    if (!chain.length) throw new Error('Añade al menos una ruta antes de guardar.');
+    this.state.routing = { ...this.state.routing, profile: PROFILES[profile] ? profile : 'custom', chain };
     this.save();
   }
   setCatalog(catalog) {
@@ -149,17 +181,23 @@ class Store {
   setDictionary(items) { this.state.dictionary = items; this.save(); }
   setSnippets(items) { this.state.snippets = items; this.save(); }
 
+  secureStatus() {
+    const backend = process.platform === 'linux' ? this.safeStorage.getSelectedStorageBackend?.() || 'unknown' : process.platform;
+    return { backend, available: this.safeStorage.isEncryptionAvailable() && !['basic_text', 'unknown'].includes(backend) };
+  }
+
   setSecret(name, value) {
+    if (!['groq', 'openrouter', 'mistral', 'openai'].includes(name) || typeof value !== 'string' || value.length > 4096) throw new Error('Credencial inválida.');
     if (!value) { delete this.state.secrets[name]; this.save(); return; }
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('El almacén seguro del sistema no está disponible todavía.');
-    this.state.secrets[name] = safeStorage.encryptString(value).toString('base64');
+    if (!this.secureStatus().available) throw new Error('Desbloquea KWallet o el llavero del sistema y reinicia Alex Dictate. No se guardarán claves con cifrado débil.');
+    this.state.secrets[name] = this.safeStorage.encryptString(value).toString('base64');
     this.save();
   }
 
   getSecret(name) {
     const raw = this.state.secrets[name];
-    if (!raw || !safeStorage.isEncryptionAvailable()) return null;
-    try { return safeStorage.decryptString(Buffer.from(raw, 'base64')); } catch (_) { return null; }
+    if (!raw || !this.secureStatus().available) return null;
+    try { return this.safeStorage.decryptString(Buffer.from(raw, 'base64')); } catch (_) { return null; }
   }
 
   createPending(meta = {}) {
@@ -193,16 +231,21 @@ class Store {
 
   beginPcmStream(id) {
     const p = pcmPartialPath(this.audioDir, id);
-    fs.writeFileSync(p, Buffer.alloc(0));
+    fs.writeFileSync(p, Buffer.alloc(0), { flag: 'wx', mode: 0o600 });
     this.updateHistory(id, { audioPath: p, bytes: 0, mime: 'audio/pcm;rate=16000' });
     return p;
   }
 
   appendPcmChunk(id, buffer) {
     const item = this.state.history.find(x => x.id === id);
-    if (!item?.audioPath || !item.audioPath.endsWith('.pcm.partial')) return false;
+    if (!item?.audioPath || !item.audioPath.endsWith('.pcm.partial')) throw new Error('La captura ya no está activa.');
     const chunk = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+    if (!chunk.length || chunk.length % 2 || chunk.length > 65536) throw new Error('Bloque de audio inválido.');
     fs.appendFileSync(item.audioPath, chunk);
+    if (Date.now() - (this.lastSync.get(id) || 0) >= 2000) {
+      const fd = fs.openSync(item.audioPath, 'r+'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      this.lastSync.set(id, Date.now());
+    }
     item.bytes = Number(item.bytes || 0) + chunk.length;
     item.updatedAt = new Date().toISOString();
     return true;
@@ -213,8 +256,9 @@ class Store {
     if (!item?.audioPath || !item.audioPath.endsWith('.pcm.partial')) throw new Error('No existe una captura PCM activa.');
     const target = wavPath(this.audioDir, id);
     const info = finalizePcmPartial(item.audioPath, target, PCM_SAMPLE_RATE);
-    try { fs.unlinkSync(item.audioPath); } catch (_) {}
+    const partial = item.audioPath;
     this.updateHistory(id, { audioPath: target, bytes: fs.statSync(target).size, durationMs: info.durationMs, mime: 'audio/wav', status: 'queued' });
+    try { fs.unlinkSync(partial); } catch (_) {}
     return target;
   }
 
@@ -224,8 +268,9 @@ class Store {
     if (!item.audioPath.endsWith('.pcm.partial')) return item.audioPath;
     const target = wavPath(this.audioDir, id);
     const info = finalizePcmPartial(item.audioPath, target, PCM_SAMPLE_RATE);
-    try { fs.unlinkSync(item.audioPath); } catch (_) {}
+    const partial = item.audioPath;
     this.updateHistory(id, { audioPath: target, bytes: fs.statSync(target).size, durationMs: item.durationMs || info.durationMs, mime: 'audio/wav', status: 'queued', error: null });
+    try { fs.unlinkSync(partial); } catch (_) {}
     return target;
   }
 
@@ -236,7 +281,15 @@ class Store {
 
   recoverInterrupted() {
     let changed = false;
+    // Recover orphaned audio after a state-file crash without inventing transcripts.
+    for (const file of fs.readdirSync(this.audioDir)) {
+      const match = file.match(/^([0-9a-f-]{36})\.(pcm\.partial|wav|webm|ogg)$/i);
+      if (!match || this.state.history.some(h => h.id === match[1])) continue;
+      this.state.history.push({ id: match[1], createdAt: fs.statSync(path.join(this.audioDir, file)).mtime.toISOString(), status: 'queued', text: '', attempts: [], audioPath: path.join(this.audioDir, file), bytes: 0 });
+      changed = true;
+    }
     for (const h of this.state.history) {
+      if (h.audioPath && !fs.existsSync(h.audioPath) && fs.existsSync(wavPath(this.audioDir, h.id))) { h.audioPath = wavPath(this.audioDir, h.id); changed = true; }
       if (!['recording', 'processing', 'queued'].includes(h.status) && !(h.status === 'failed' && h.audioPath?.endsWith('.pcm.partial'))) continue;
       const previousStatus = h.status;
       if (h.audioPath && fs.existsSync(h.audioPath)) {
@@ -272,8 +325,10 @@ class Store {
   cancelRecording(id) {
     const h = this.state.history.find(x => x.id === id);
     if (!h) return;
-    if (h.audioPath) { try { if (fs.existsSync(h.audioPath)) fs.unlinkSync(h.audioPath); } catch (_) {} }
-    this.updateHistory(id, { status: 'cancelled', error: null, audioPath: null, bytes: 0 });
+    if (h.audioPath?.endsWith('.pcm.partial')) {
+      try { this.ensureWavForHistory(id); } catch (_) { /* Preserve even a very short partial. */ }
+    }
+    this.updateHistory(id, { status: 'cancelled', error: 'Guardado sin enviar. Puedes reintentarlo o eliminarlo.' });
   }
 
   deleteHistory(id) {
@@ -292,7 +347,7 @@ class Store {
       if (h.status !== 'done' || !h.audioPath) continue;
       const ts = Date.parse(h.updatedAt || h.createdAt);
       if (Number.isFinite(ts) && ts < cutoff) {
-        try { if (fs.existsSync(h.audioPath)) fs.unlinkSync(h.audioPath); } catch (_) {}
+        try { if (fs.existsSync(h.audioPath)) fs.unlinkSync(h.audioPath); } catch (_) { continue; }
         h.audioPath = null;
         changed = true;
       }

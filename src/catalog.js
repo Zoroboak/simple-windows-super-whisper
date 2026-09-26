@@ -7,7 +7,7 @@ const ROUTES = [
   {
     id: 'openrouter-gpt-transcribe', name: 'OpenRouter · GPT Transcribe', family: 'premium', transport: 'openrouter-json',
     keyRef: 'openrouter', model: 'openai/gpt-transcribe', costPerHourUsd: 0.27, maxSegmentSeconds: 42, requestTimeoutMs: 25000,
-    badge: 'Máxima calidad', note: 'Alta precisión; úsalo cuando priorices calidad sobre coste.'
+    badge: 'Precisión prioritaria', note: 'Alternativa para priorizar precisión. La calidad depende de tu audio; no se ha medido con tu voz.'
   },
   {
     id: 'openrouter-whisper-v3', name: 'OpenRouter · Whisper Large v3', family: 'value', transport: 'openrouter-json',
@@ -61,7 +61,7 @@ const PROFILES = {
     chain: ['openrouter-mai2', 'openrouter-whisper-v3', 'groq-turbo', 'groq-large']
   },
   quality: {
-    id: 'quality', name: 'Máxima calidad', description: 'Prioriza precisión; mantiene rutas baratas y gratuitas al final.',
+    id: 'quality', name: 'Precisión prioritaria', description: 'Prioriza precisión; mantiene rutas baratas y gratuitas al final.',
     chain: ['openrouter-gpt-transcribe', 'openrouter-mai2', 'openrouter-qwen-flash', 'openrouter-whisper-v3', 'groq-large']
   }
 };
@@ -98,7 +98,7 @@ function endpointSummary(endpoint = {}) {
     endpoint.uptime, endpoint.uptime_last_30m, endpoint.uptime_last_1h,
     endpoint.uptime_last_24h, perf.uptime, perf.uptime_last_30m
   );
-  const latencyMs = latencyRaw == null ? null : latencyRaw * (latencyRaw < 50 ? 1000 : 1);
+  const latencyMs = firstFinite(endpoint.latency_ms, perf.latency_ms, latencyRaw == null ? null : latencyRaw * 1000);
   const uptime = uptimeRaw == null ? null : (uptimeRaw <= 1 ? uptimeRaw * 100 : uptimeRaw);
   return {
     provider: String(provider),

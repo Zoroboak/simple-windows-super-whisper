@@ -1,342 +1,258 @@
 const path = require('path');
 const fs = require('fs');
-const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, nativeImage, dialog, clipboard, session, net, screen } = require('electron');
+const { pathToFileURL } = require('url');
+const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, nativeImage, dialog, clipboard, session, net, screen, shell, systemPreferences } = require('electron');
 const { Store } = require('./store');
 const { transcribeWithFallback } = require('./providers');
 const { fetchOpenRouterCatalog, routeById } = require('./catalog');
 const { pasteText, diagnoseInjection } = require('./injector');
+const { changeHotkey } = require('./hotkey');
+const { LivePreview } = require('./live');
+const { testCredential } = require('./credentials');
+const { launchWaylandSetup } = require('./linux_setup');
+const updates = require('./updater');
 
 app.commandLine.appendSwitch('enable-features', 'GlobalShortcutsPortal,GlobalShortcutsPortalPreferredTrigger');
 app.setName('Alex Dictate');
 app.setDesktopName?.('com.zoroboak.AlexDictate.desktop');
-
-const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) app.quit();
-
-let store, settingsWin, overlayWin, tray;
-let activeRecordingId = null;
-let recordingStartedAt = 0;
-let busy = false;
-let currentHotkey = null;
-let cancelShortcutRegistered = false;
-let liveSocket = null;
-let liveText = '';
-let liveAuthEnabled = false;
-let liveInsertBuffer = '';
-let liveInsertTimer = null;
-let liveInsertChain = Promise.resolve();
-
-function sendStateChanged() { if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('state:changed'); }
-function overlaySend(channel, payload) { if (overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send(channel, payload); }
-
-function isToggleArg(arg) { return arg === '--toggle' || /^alex-dictate:\/\/(toggle|dictate)/i.test(arg || ''); }
-function handleExternalArgs(argv = []) {
-  if (argv.some(isToggleArg)) setTimeout(() => toggleRecording(), 150);
+if (!app.requestSingleInstanceLock()) app.exit(0);
+let store, settingsWin, overlayWin, overlayReady, tray, currentHotkey, live;
+let activeId = null, processingId = null, phase = 'idle', hideTimer, updateTimer, quitAfterSave = false, captureFault = null;
+let liveInsertion = Promise.resolve(), liveBuffer = '', liveTimer, liveAllowed = false, liveInserted = false;
+const rendererFile = name => path.join(__dirname, '..', 'renderer', name);
+const send = (win, channel, data) => { if (win && !win.isDestroyed()) win.webContents.send(channel, data); };
+const notify = text => send(settingsWin, 'notice', { text });
+const overlaySend = (channel, data) => send(overlayWin, channel, data);
+const changed = () => { send(settingsWin, 'state:changed'); updateTray(); };
+const isBusy = () => phase !== 'idle';
+function reset() { phase = 'idle'; activeId = null; processingId = null; captureFault = null; changed(); }
+function quietFailure(id, message) { try { if (id) store.markFailure(id, message); } catch (_) {} }
+function hideLater(ms) { clearTimeout(hideTimer); hideTimer = setTimeout(() => { if (!isBusy()) overlayWin?.hide(); }, ms); }
+function harden(win, name) {
+  const expected = pathToFileURL(rendererFile(name)).href;
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', (e, url) => { if (url !== expected) e.preventDefault(); });
+  win.webContents.on('will-attach-webview', e => e.preventDefault());
 }
-
-app.on('second-instance', (_event, argv) => handleExternalArgs(argv));
-app.on('open-url', (event, url) => { event.preventDefault(); handleExternalArgs([url]); });
-
-function installLiveAuthHook() {
-  if (liveAuthEnabled) return;
-  liveAuthEnabled = true;
-  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: ['wss://api.mistral.ai/*'] }, (details, callback) => {
-    const key = store?.getSecret('mistral');
-    const headers = { ...details.requestHeaders };
-    if (key) headers.Authorization = `Bearer ${key}`;
-    callback({ requestHeaders: headers });
-  });
-}
-
-function queueLiveInsertion(delta) {
-  if (store.state.settings.insertionMode !== 'live-experimental' || !store.state.settings.autoPaste || !delta) return;
-  liveInsertBuffer += delta;
-  if (liveInsertTimer) return;
-  liveInsertTimer = setTimeout(() => {
-    const part = liveInsertBuffer;
-    liveInsertBuffer = '';
-    liveInsertTimer = null;
-    if (!part) return;
-    liveInsertChain = liveInsertChain.then(() => pasteText(part)).catch(() => {});
-  }, 180);
-}
-
-function startLivePreview() {
-  stopLivePreview(false);
-  if (!store.state.settings.livePreview || store.state.settings.liveProvider !== 'mistral') return;
-  if (!store.getSecret('mistral')) {
-    overlaySend('overlay:live-text', { text: '', warning: 'Realtime desactivado: falta API key de Mistral.' });
-    return;
-  }
-  installLiveAuthHook();
-  liveText = '';
-  liveInsertBuffer = '';
-  const model = 'voxtral-mini-transcribe-realtime-2602';
-  const ws = new net.WebSocket(`wss://api.mistral.ai/v1/audio/transcriptions/realtime?model=${model}`);
-  liveSocket = ws;
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'session.update', session: {
-      audio_format: { encoding: 'pcm_s16le', sample_rate: 16000 },
-      target_streaming_delay_ms: Number(store.state.settings.liveTargetDelayMs || 650)
-    } }));
-  };
-  ws.onmessage = event => {
-    try {
-      const msg = JSON.parse(String(event.data));
-      if (msg.type === 'transcription.text.delta' && msg.text) {
-        liveText += msg.text;
-        overlaySend('overlay:live-text', { text: liveText });
-        queueLiveInsertion(msg.text);
-      } else if (msg.type === 'error' || msg.type === 'transcription.error') {
-        overlaySend('overlay:live-text', { text: liveText, warning: msg.error?.message || msg.message || 'Error realtime' });
-      }
-    } catch (_) {}
-  };
-  ws.onerror = () => overlaySend('overlay:live-text', { text: liveText, warning: 'Realtime desconectado; el WAV local sigue seguro.' });
-}
-
-function pushLivePcm(chunk) {
-  const ws = liveSocket;
-  if (!ws || ws.readyState !== 1) return;
-  try { ws.send(JSON.stringify({ type: 'input_audio.append', audio: Buffer.from(chunk).toString('base64') })); } catch (_) {}
-}
-
-function stopLivePreview(flush = true) {
-  if (liveInsertTimer) { clearTimeout(liveInsertTimer); liveInsertTimer = null; }
-  if (liveInsertBuffer) {
-    const part = liveInsertBuffer; liveInsertBuffer = '';
-    if (store?.state.settings.insertionMode === 'live-experimental') liveInsertChain = liveInsertChain.then(() => pasteText(part)).catch(() => {});
-  }
-  const ws = liveSocket; liveSocket = null;
-  if (!ws) return;
-  try {
-    if (flush && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'input_audio.flush' }));
-      ws.send(JSON.stringify({ type: 'input_audio.end' }));
-      setTimeout(() => { try { ws.close(); } catch (_) {} }, 900);
-    } else ws.close();
-  } catch (_) {}
-}
-
-function createSettingsWindow() {
+function settingsWindow() {
   if (settingsWin && !settingsWin.isDestroyed()) { settingsWin.show(); settingsWin.focus(); return; }
-  settingsWin = new BrowserWindow({
-    width: 1180, height: 800, minWidth: 920, minHeight: 650,
-    title: 'Alex Dictate', backgroundColor: '#0b0d10',
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false }
-  });
-  settingsWin.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-  settingsWin.on('close', e => { if (!app.isQuitting) { e.preventDefault(); settingsWin.hide(); } });
+  settingsWin = new BrowserWindow({ width: 1180, height: 800, minWidth: 880, minHeight: 620,
+    title: 'Alex Dictate', backgroundColor: '#0b0d10', autoHideMenuBar: true,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  harden(settingsWin, 'index.html'); settingsWin.loadFile(rendererFile('index.html'));
+  settingsWin.on('close', event => { if (!app.isQuitting) { event.preventDefault(); settingsWin.hide(); } });
 }
-
-function createOverlay() {
-  overlayWin = new BrowserWindow({
-    width: 660, height: 168, frame: false, transparent: true, resizable: false,
-    show: false, alwaysOnTop: true, skipTaskbar: true, focusable: false,
-    hasShadow: false, backgroundColor: '#00000000',
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false }
+function makeOverlay() {
+  overlayWin = new BrowserWindow({ width: 660, height: 190, frame: false, transparent: true, resizable: false,
+    show: false, alwaysOnTop: true, skipTaskbar: true, focusable: false, hasShadow: false,
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+  harden(overlayWin, 'overlay.html'); overlayWin.setAlwaysOnTop(true, 'floating');
+  overlayReady = overlayWin.loadFile(rendererFile('overlay.html'));
+  overlayWin.webContents.on('render-process-gone', () => {
+    live?.close(); liveAllowed = false; quietFailure(activeId, 'La ventana de captura se cerró. El audio parcial permanece en Historial.'); reset();
+    if (!app.isQuitting) { overlayWin.destroy(); makeOverlay(); settingsWindow(); }
   });
-  overlayWin.setAlwaysOnTop(true, 'floating');
-  overlayWin.setIgnoreMouseEvents(false);
-  overlayWin.loadFile(path.join(__dirname, '..', 'renderer', 'overlay.html'));
 }
-
 function positionOverlay() {
-  const point = screen.getCursorScreenPoint();
-  const display = screen.getDisplayNearestPoint(point);
-  const b = display.workArea;
-  overlayWin.setPosition(Math.round(b.x + (b.width - 660) / 2), Math.round(b.y + b.height - 208), false);
+  let display; try { display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()); } catch (_) { display = screen.getPrimaryDisplay(); }
+  const b = display.workArea, width = Math.min(660, b.width - 24);
+  overlayWin.setSize(width, 190); overlayWin.setPosition(Math.round(b.x + (b.width - width) / 2), Math.round(b.y + b.height - 215));
 }
-
-function registerMainHotkey(accelerator) {
-  const next = String(accelerator || '').trim();
-  if (!next) throw new Error('Atajo vacío.');
-  if (currentHotkey === next && globalShortcut.isRegistered(next)) return true;
-  const ok = globalShortcut.register(next, () => toggleRecording());
-  if (!ok) throw new Error(`No se pudo registrar ${next}. Puede estar ocupado o pendiente de autorización del portal Wayland.`);
-  if (currentHotkey && currentHotkey !== next) globalShortcut.unregister(currentHotkey);
-  currentHotkey = next;
-  return true;
+function registerHotkey(value) {
+  currentHotkey = changeHotkey(globalShortcut, currentHotkey, value,
+    () => toggle().catch(e => notify(e.message)), next => store.setSettings({ hotkey: next }, { allowHotkey: true }));
 }
-
-function registerTemporaryCancel() {
-  if (process.platform === 'linux' && process.env.WAYLAND_DISPLAY) {
-    overlaySend('overlay:hint', { text: 'Pulsa el atajo de nuevo para terminar · cancelar desde la bandeja' });
-    return;
-  }
-  if (cancelShortcutRegistered || globalShortcut.isRegistered('Escape')) return;
-  try {
-    cancelShortcutRegistered = globalShortcut.register('Escape', () => cancelActiveRecording());
-    if (!cancelShortcutRegistered) overlaySend('overlay:hint', { text: 'Pulsa el atajo de nuevo para terminar · cancelar desde la bandeja' });
-  } catch (_) { cancelShortcutRegistered = false; }
-}
-function unregisterTemporaryCancel() {
-  if (cancelShortcutRegistered) { try { globalShortcut.unregister('Escape'); } catch (_) {} }
-  cancelShortcutRegistered = false;
-}
-
-function createTray() {
-  const iconPath = path.join(__dirname, '..', 'assets', 'icon.png');
-  const icon = nativeImage.createFromPath(iconPath).resize({ width: 20, height: 20 });
-  tray = new Tray(icon);
-  tray.setToolTip('Alex Dictate');
-  const update = () => tray.setContextMenu(Menu.buildFromTemplate([
-    { label: busy ? 'Procesando…' : (activeRecordingId ? 'Detener dictado' : 'Iniciar dictado'), enabled: !busy, click: () => toggleRecording() },
-    { label: 'Cancelar grabación', visible: Boolean(activeRecordingId), click: () => cancelActiveRecording() },
-    { label: 'Abrir Alex Dictate', click: () => createSettingsWindow() },
-    { type: 'separator' },
-    { label: 'Salir', click: () => { app.isQuitting = true; app.quit(); } }
+function updateTray() {
+  if (!tray) return;
+  tray.setToolTip(`Alex Dictate · ${phase === 'idle' ? 'Listo' : phase === 'recording' ? 'Grabando' : 'Procesando'}`);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: phase === 'recording' ? 'Terminar dictado' : 'Iniciar dictado', enabled: ['idle', 'recording'].includes(phase), click: () => toggle().catch(e => notify(e.message)) },
+    { label: 'Guardar sin enviar', visible: phase === 'recording', click: () => overlaySend('overlay:command', { type: 'cancel' }) },
+    { label: 'Abrir Alex Dictate', click: settingsWindow }, { type: 'separator' },
+    { label: 'Salir', click: () => app.quit() }
   ]));
-  tray.on('click', () => toggleRecording());
-  update();
-  return update;
 }
-let updateTray = () => {};
-
-async function toggleRecording() {
-  if (busy || !overlayWin) return;
-  if (!activeRecordingId) {
-    positionOverlay(); overlayWin.showInactive();
-    overlaySend('overlay:command', { type: 'start' });
-  } else overlaySend('overlay:command', { type: 'stop' });
+function queueInsertion(delta) {
+  if (!liveAllowed || !delta) return;
+  liveBuffer += delta;
+  if (liveTimer) return;
+  liveTimer = setTimeout(flushInsertion, 350);
 }
-
-async function cancelActiveRecording() {
-  if (!activeRecordingId) return;
-  overlaySend('overlay:command', { type: 'cancel' });
+function flushInsertion() {
+  clearTimeout(liveTimer); liveTimer = null;
+  const text = liveBuffer; liveBuffer = '';
+  if (!text || !liveAllowed) return;
+  liveInsertion = liveInsertion.then(async () => {
+    if (!liveAllowed) return;
+    const result = await pasteText(text);
+    liveInserted = true;
+    if (result.warning) { liveAllowed = false; overlaySend('overlay:live-text', { warning: 'Escritura en vivo detenida. El resultado completo quedará en Historial.' }); }
+  }).catch(() => { liveAllowed = false; });
 }
-
+function startLive() {
+  live?.close(); live = null; liveBuffer = ''; liveInserted = false;
+  const s = store.state.settings;
+  liveAllowed = s.insertionMode === 'live-experimental' && s.livePreview && s.autoPaste;
+  if (!s.livePreview) return;
+  const key = store.getSecret('mistral');
+  if (!key) { overlaySend('overlay:live-text', { warning: 'Sin clave Mistral: la transcripción final sigue disponible.' }); return; }
+  try {
+    live = new LivePreview(net.WebSocket, key, s.liveTargetDelayMs,
+      (text, delta) => { overlaySend('overlay:live-text', { text }); queueInsertion(delta); },
+      warning => overlaySend('overlay:live-text', { warning }));
+  } catch (_) { overlaySend('overlay:live-text', { warning: 'Vista en directo no disponible. Se conserva la captura local.' }); }
+}
+async function toggle(fromSettings = false) {
+  if (phase === 'recording') { phase = 'stopping'; changed(); overlaySend('overlay:command', { type: 'stop' }); return; }
+  if (isBusy()) return;
+  clearTimeout(hideTimer); phase = 'starting'; captureFault = null; changed();
+  try {
+    if (fromSettings && settingsWin?.isVisible()) { settingsWin.hide(); await new Promise(r => setTimeout(r, 180)); }
+    await overlayReady; positionOverlay(); overlayWin.showInactive(); overlaySend('overlay:command', { type: 'start' });
+  } catch (e) { reset(); throw e; }
+}
 async function processHistory(id, options = {}) {
-  busy = true; updateTray();
-  overlaySend('overlay:status', { status: 'processing', text: 'Transcribiendo con tu cadena de prioridad…' });
+  phase = 'processing'; processingId = id; changed();
+  const behavior = { ...store.state.settings };
+  overlaySend('overlay:status', { status: 'processing', text: 'Transcribiendo con tu orden guardado…' });
   try {
     const result = await transcribeWithFallback(store, id, options);
     store.markSuccess(id, result.text, result.route);
-    let injection = { method: 'clipboard' };
-    if (store.state.settings.insertionMode === 'live-experimental') {
-      await liveInsertChain.catch(() => {});
-      clipboard.writeText(result.text);
-      injection = { method: 'live-experimental', warning: 'Texto final revisado copiado al portapapeles.' };
-    } else if (store.state.settings.autoPaste) injection = await pasteText(result.text);
-    else clipboard.writeText(result.text);
-    overlaySend('overlay:status', { status: 'done', text: result.text, warning: injection.warning || null });
-    setTimeout(() => overlayWin?.hide(), injection.warning ? 3300 : 1000);
+    // A failed paste must NEVER turn a successful transcription into a failed one.
+    let insertion = { method: 'clipboard' };
+    if (options.manual || liveInserted || !behavior.autoPaste) clipboard.writeText(result.text);
+    else { try { insertion = await pasteText(result.text); } catch (_) { clipboard.writeText(result.text); insertion.warning = 'Texto copiado. El sistema no permitió pegar automáticamente.'; } }
+    if (options.manual) insertion.warning = 'Reintento completado. Texto copiado; no se pega en otra ventana sin tu intervención.';
+    else if (liveInserted) insertion.warning = 'Resultado final disponible en Historial y portapapeles; no se sobrescribió el texto en vivo.';
+    store.updateHistory(id, { insertion: insertion.method, insertionWarning: insertion.warning || null });
+    overlaySend('overlay:status', { status: 'done', text: result.text, warning: insertion.warning });
+    if (options.manual) notify('Transcripción recuperada y copiada.');
+    hideLater(insertion.warning ? 4500 : 1700);
   } catch (e) {
-    store.markFailure(id, e.message || e);
-    overlaySend('overlay:status', { status: 'failed', text: String(e.message || e) });
-  } finally {
-    busy = false; activeRecordingId = null; unregisterTemporaryCancel(); updateTray(); sendStateChanged();
-  }
+    quietFailure(id, String(e.message || e)); overlaySend('overlay:status', { status: 'failed', text: 'No se pudo transcribir. Tu audio sigue en Historial.', warning: e.message });
+    notify('Audio guardado: puedes reintentar desde Historial.');
+  } finally { liveAllowed = false; reset(); }
 }
-
+function validSender(event, role = 'either') {
+  const windows = role === 'settings' ? [settingsWin] : role === 'overlay' ? [overlayWin] : [settingsWin, overlayWin];
+  return windows.some(w => w && !w.isDestroyed() && event.sender === w.webContents && event.senderFrame === w.webContents.mainFrame);
+}
+function handle(channel, role, fn) {
+  ipcMain.handle(channel, (e, ...args) => { if (!validSender(e, role)) throw new Error('Origen IPC no autorizado.'); return fn(...args); });
+}
+function activeCapture(id) { if (!id || id !== activeId) throw new Error('Esta grabación ya no está activa.'); }
+async function abortCapture({ id, error }) {
+  if (id && id !== activeId) return false;
+  live?.close(); liveAllowed = false; clearTimeout(liveTimer); liveBuffer = '';
+  quietFailure(id || activeId, `Captura interrumpida: ${String(error || 'Error de micrófono').slice(0, 400)}`);
+  reset(); notify('No se pudo completar la captura. Revisa micrófono y audio local en Historial.'); return true;
+}
 app.whenReady().then(async () => {
-  store = new Store();
-  store.recoverInterrupted();
-  store.cleanupCompletedAudio();
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, cb, details = {}) => {
-    if (permission !== 'media') return cb(false);
-    const types = details.mediaTypes || [];
-    cb(!types.includes('video') && (types.length === 0 || types.includes('audio')));
+  store = new Store(); store.recoverInterrupted(); store.cleanupCompletedAudio();
+  session.defaultSession.setPermissionRequestHandler((wc, permission, cb, details = {}) => {
+    const own = [settingsWin, overlayWin].some(w => w && w.webContents === wc);
+    cb(own && permission === 'media' && !(details.mediaTypes || []).includes('video'));
   });
+  session.defaultSession.setPermissionCheckHandler((wc, permission) => [settingsWin, overlayWin].some(w => w && w.webContents === wc) && permission === 'media');
+  makeOverlay();
+  const icon = nativeImage.createFromPath(path.join(__dirname, '..', 'assets', 'icon.png')).resize({ width: 22, height: 22 });
+  tray = new Tray(icon); tray.on('click', settingsWindow); updateTray();
+  updates.configureUpdater(data => send(settingsWin, 'update:status', data), {
+    isBusy, beforeInstall: () => { app.isQuitting = true; }
+  });
+  await overlayReady;
+  try { registerHotkey(store.state.settings.hotkey); } catch (e) { settingsWindow(); setTimeout(() => notify(e.message), 600); }
+  if (!store.state.settings.onboardingComplete || process.argv.includes('--dev')) settingsWindow();
   try { app.setAsDefaultProtocolClient('alex-dictate'); } catch (_) {}
-  createOverlay(); updateTray = createTray();
-  try { registerMainHotkey(store.state.settings.hotkey); } catch (_) { setTimeout(() => createSettingsWindow(), 350); }
-  if (process.argv.includes('--dev') || store.state.history.length === 0) createSettingsWindow();
-  handleExternalArgs(process.argv);
-});
-
+  const check = () => { if (!isBusy() && store.state.settings.checkUpdatesAutomatically) updates.checkForUpdates(); };
+  setTimeout(check, 15000); updateTimer = setInterval(check, 6 * 60 * 60 * 1000);
+  handleArgs(process.argv);
+}).catch(error => { dialog.showErrorBox('Alex Dictate', `No se pudo iniciar. No se ha eliminado tu audio.\n${error.message}`); app.exit(1); });
+function handleArgs(args = []) { if (args.some(a => a === '--toggle' || /^alex-dictate:\/\/(toggle|dictate)\/?$/i.test(a))) toggle().catch(e => notify(e.message)); }
+app.on('second-instance', (_e, argv) => { if (store) handleArgs(argv); });
+app.on('open-url', (e, url) => { e.preventDefault(); app.whenReady().then(() => handleArgs([url])); });
+app.on('activate', () => { if (store) settingsWindow(); });
 app.on('window-all-closed', () => {});
-app.on('will-quit', () => globalShortcut.unregisterAll());
-app.on('activate', () => createSettingsWindow());
-
-ipcMain.handle('state:get', () => store.publicState());
-ipcMain.handle('settings:set', (_e, patch) => { store.setSettings(patch); sendStateChanged(); return store.publicState(); });
-ipcMain.handle('routing:set', (_e, patch) => { store.setRouting(patch); sendStateChanged(); return store.publicState(); });
-ipcMain.handle('dictionary:set', (_e, items) => { store.setDictionary(items); sendStateChanged(); return store.publicState(); });
-ipcMain.handle('snippets:set', (_e, items) => { store.setSnippets(items); sendStateChanged(); return store.publicState(); });
-ipcMain.handle('secret:set', (_e, name, value) => { store.setSecret(name, value); sendStateChanged(); return true; });
-ipcMain.handle('hotkey:set', (_e, accelerator) => {
-  const old = currentHotkey || store.state.settings.hotkey;
-  try { registerMainHotkey(accelerator); store.setSettings({ hotkey: accelerator }); sendStateChanged(); return { ok: true, hotkey: accelerator }; }
-  catch (e) { if (old && !globalShortcut.isRegistered(old)) try { registerMainHotkey(old); } catch (_) {} throw e; }
+app.on('before-quit', event => {
+  if (app.isQuitting) return;
+  if (isBusy()) {
+    event.preventDefault();
+    if (phase === 'recording') {
+      const choice = dialog.showMessageBoxSync({ type: 'question', buttons: ['Continuar dictando', 'Guardar y salir'], defaultId: 0, cancelId: 0, message: 'Hay un dictado activo.', detail: 'Guardar y salir conserva el audio sin enviarlo.' });
+      if (choice === 1) { quitAfterSave = true; overlaySend('overlay:command', { type: 'cancel' }); }
+    } else notify('Espera a que termine la operación para salir.');
+  } else app.isQuitting = true;
 });
-ipcMain.handle('catalog:refresh', async () => {
-  const catalog = await fetchOpenRouterCatalog(store.getSecret('openrouter'), undefined, store.state.settings.openRouterRegion || 'global');
-  store.setCatalog(catalog); sendStateChanged(); return store.publicState().routing;
-});
-ipcMain.handle('diagnose', async () => ({
-  ...(await diagnoseInjection()), hotkey: store.state.settings.hotkey, hotkeyRegistered: Boolean(currentHotkey && globalShortcut.isRegistered(currentHotkey)),
-  userData: app.getPath('userData'), version: app.getVersion(), routingChain: store.state.routing.chain,
-  routeReadiness: store.state.routing.chain.map(id => { const r = routeById(id); return { id, ready: Boolean(r && store.getSecret(r.keyRef)), keyRef: r?.keyRef || null }; })
-}));
-ipcMain.on('window:settings', () => createSettingsWindow());
-ipcMain.on('recording:toggle', () => toggleRecording());
+app.on('will-quit', () => { clearInterval(updateTimer); globalShortcut.unregisterAll(); live?.close(); });
 
-ipcMain.handle('recording:started', (_e, meta) => {
-  if (activeRecordingId) return activeRecordingId;
-  const item = store.createPending(meta);
-  activeRecordingId = item.id;
+handle('state:get', 'either', () => ({ ...store.publicState(), runtime: { phase, activeId, processingId, hotkeyRegistered: Boolean(currentHotkey && globalShortcut.isRegistered(currentHotkey)) } }));
+handle('update:get', 'settings', updates.getUpdateState);
+handle('update:check', 'settings', updates.checkForUpdates);
+handle('update:download', 'settings', updates.downloadUpdate);
+handle('update:install', 'settings', updates.installUpdate);
+handle('update:apply', 'settings', updates.applyUpdate);
+handle('external:open', 'settings', async raw => {
+  const url = new URL(String(raw));
+  if (url.protocol !== 'https:' || url.username || url.password || !['openrouter.ai','console.groq.com','console.mistral.ai','platform.openai.com','github.com'].includes(url.hostname)) throw new Error('Enlace no permitido.');
+  await shell.openExternal(url.href); return true;
+});
+handle('secret:set', 'settings', (name, value) => { store.setSecret(name, value); changed(); return true; });
+handle('credential:test', 'settings', name => testCredential(name, store.getSecret(name)));
+handle('settings:set', 'settings', patch => { store.setSettings(patch); changed(); return store.publicState(); });
+handle('hotkey:set', 'settings', value => { if (isBusy()) throw new Error('Termina el dictado antes de cambiar el atajo.'); registerHotkey(value); changed(); return { ok: true, hotkey: currentHotkey }; });
+handle('routing:set', 'settings', patch => { store.setRouting(patch); changed(); return store.publicState(); });
+handle('dictionary:set', 'settings', items => { store.setDictionary(items); changed(); return true; });
+handle('snippets:set', 'settings', items => { store.setSnippets(items); changed(); return true; });
+handle('catalog:refresh', 'settings', async () => { const data = await fetchOpenRouterCatalog(store.getSecret('openrouter'), undefined, store.state.settings.openRouterRegion); store.setCatalog(data); changed(); return store.state.routing; });
+handle('linux:setup-wayland', 'settings', launchWaylandSetup);
+handle('diagnose', 'settings', async () => ({ ...(await diagnoseInjection()), secureStorage: store.secureStatus(),
+  microphonePermission: process.platform === 'darwin' ? systemPreferences.getMediaAccessStatus('microphone') : 'Comprueba con Probar micrófono',
+  accessibility: process.platform === 'darwin' ? systemPreferences.isTrustedAccessibilityClient(false) : null,
+  hotkey: currentHotkey || store.state.settings.hotkey, hotkeyRegistered: Boolean(currentHotkey && globalShortcut.isRegistered(currentHotkey)),
+  version: app.getVersion(), userData: store.dir, routeReadiness: store.state.routing.chain.map(id => { const r = routeById(id); return { id, ready: Boolean(r && store.getSecret(r.keyRef)), keyRef: r?.keyRef }; }) }));
+ipcMain.on('recording:toggle', (e, data) => { if (validSender(e)) toggle(validSender(e, 'settings') && !data?.test).catch(error => notify(error.message)); });
+ipcMain.on('window:settings', e => { if (validSender(e)) settingsWindow(); });
+handle('recording:started', 'overlay', meta => {
+  if (phase !== 'starting' || activeId) throw new Error('Ya hay una grabación activa.');
+  const item = store.createPending({ microphoneLabel: String(meta?.microphoneLabel || '').slice(0, 200) }); activeId = item.id;
+  try { store.beginPcmStream(item.id); phase = 'recording'; startLive(); changed(); return item.id; }
+  catch (error) { quietFailure(item.id, error.message); reset(); throw error; }
+});
+handle('recording:pcm', 'overlay', payload => {
+  activeCapture(payload?.id);
+  if (!['recording', 'stopping'].includes(phase)) throw new Error('Captura detenida.');
+  try { const bytes = Buffer.from(payload.chunk); store.appendPcmChunk(activeId, bytes); try { live?.push(bytes); } catch (_) { live?.close(); } return true; }
+  catch (error) { captureFault = error.message; throw error; }
+});
+handle('recording:aborted', 'overlay', abortCapture);
+handle('recording:finished', 'overlay', async payload => {
+  activeCapture(payload?.id); const id = activeId; phase = 'stopping';
   try {
-    store.beginPcmStream(item.id);
-    startLivePreview(); registerTemporaryCancel();
-    recordingStartedAt = Date.now(); updateTray(); sendStateChanged();
-    return item.id;
-  } catch (e) {
-    store.markFailure(item.id, `No se pudo iniciar la persistencia local: ${e.message || e}`);
-    activeRecordingId = null;
-    updateTray(); sendStateChanged();
-    throw e;
-  }
+    if (captureFault) throw new Error(captureFault);
+    store.finalizePcmStream(id); // metadata duration is computed from samples, not wall time
+    await live?.finish(); flushInsertion(); await liveInsertion; liveAllowed = false;
+    activeId = null; processHistory(id); return true;
+  } catch (e) { await abortCapture({ id, error: e.message }); throw e; }
 });
-
-ipcMain.on('recording:pcm', (_e, payload) => {
-  if (!payload?.id || !payload?.chunk || payload.id !== activeRecordingId) return;
-  try {
-    const chunk = Buffer.from(payload.chunk);
-    store.appendPcmChunk(payload.id, chunk);
-    pushLivePcm(chunk);
-  } catch (_) {}
-});
-
-ipcMain.handle('recording:finished', async (_e, payload) => {
-  const id = payload.id || activeRecordingId;
-  if (!id) throw new Error('No hay una grabación activa.');
-  stopLivePreview(true); unregisterTemporaryCancel();
-  try {
-    const audioPath = store.finalizePcmStream(id);
-    if (!audioPath || !fs.existsSync(audioPath) || fs.statSync(audioPath).size <= 44) throw new Error('No se pudo persistir el WAV local.');
-    store.updateHistory(id, { durationMs: payload.durationMs || (Date.now() - recordingStartedAt), microphoneLabel: payload.microphoneLabel || null });
-    activeRecordingId = null; updateTray(); sendStateChanged();
-    processHistory(id); return true;
-  } catch (e) {
-    store.markFailure(id, `No se pudo cerrar el audio local: ${e.message || e}`);
-    activeRecordingId = null; busy = false; updateTray(); sendStateChanged();
-    overlaySend('overlay:status', { status: 'failed', text: String(e.message || e) });
-    throw e;
-  }
-});
-
-ipcMain.handle('recording:cancelled', (_e, id) => {
-  stopLivePreview(false); unregisterTemporaryCancel();
-  const rid = id || activeRecordingId;
-  if (rid) store.cancelRecording(rid);
-  activeRecordingId = null; busy = false; overlayWin.hide(); updateTray(); sendStateChanged(); return true;
-});
-
-ipcMain.handle('history:retry', async (_e, id) => {
-  if (busy || activeRecordingId) return false;
-  store.ensureWavForHistory(id);
-  store.updateHistory(id, { status: 'queued', error: null });
-  processHistory(id, { ignoreCooldown: true });
+handle('recording:cancelled', 'overlay', async id => {
+  activeCapture(id); live?.close(); liveAllowed = false; clearTimeout(liveTimer); liveBuffer = '';
+  store.cancelRecording(id); reset(); overlayWin.hide();
+  if (quitAfterSave) { app.isQuitting = true; app.quit(); }
   return true;
 });
-ipcMain.handle('history:copy', (_e, id) => { const h = store.state.history.find(x => x.id === id); if (h?.text) clipboard.writeText(h.text); return true; });
-ipcMain.handle('history:save-audio', async (_e, id) => {
-  const h = store.state.history.find(x => x.id === id);
-  if (!h?.audioPath || !fs.existsSync(h.audioPath)) throw new Error('No hay audio guardado.');
-  const ext = path.extname(h.audioPath) || '.wav';
-  const result = await dialog.showSaveDialog({ defaultPath: `alex-dictate-${id}${ext}` });
-  if (!result.canceled && result.filePath) fs.copyFileSync(h.audioPath, result.filePath);
-  return !result.canceled;
+handle('history:retry', 'settings', id => {
+  if (isBusy()) throw new Error('Termina el dictado actual antes de reintentar.');
+  store.ensureWavForHistory(id); store.updateHistory(id, { status: 'queued', error: null });
+  liveInserted = false; processHistory(id, { ignoreCooldown: true, manual: true }); return true;
 });
-ipcMain.handle('history:delete', (_e, id) => { store.deleteHistory(id); sendStateChanged(); return true; });
+handle('history:copy', 'settings', id => { const h = store.state.history.find(h => h.id === id); if (h?.text) clipboard.writeText(h.text); return true; });
+handle('history:delete', 'settings', id => { if (id === activeId || id === processingId) throw new Error('No puedes borrar una operación activa.'); store.deleteHistory(id); changed(); return true; });
+handle('history:save-audio', 'settings', async id => {
+  if (id === activeId) throw new Error('Termina primero la grabación.');
+  const h = store.state.history.find(h => h.id === id);
+  if (!h?.audioPath || !fs.existsSync(h.audioPath)) throw new Error('El audio ya no está disponible.');
+  if (h.audioPath.endsWith('.pcm.partial')) { try { store.ensureWavForHistory(id); } catch (_) {} }
+  const file = store.state.history.find(h => h.id === id).audioPath;
+  const result = await dialog.showSaveDialog(settingsWin, { defaultPath: path.join(app.getPath('downloads'), `alex-dictate-${id}${path.extname(file)}`) });
+  if (!result.canceled && result.filePath) fs.copyFileSync(file, result.filePath); return !result.canceled;
+});

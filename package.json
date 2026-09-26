@@ -1,7 +1,7 @@
 {
   "name": "alex-dictate",
-  "version": "1.1.0",
-  "description": "Local-first cross-platform voice dictation with persistent provider fallbacks, realtime preview and crash-safe audio.",
+  "version": "1.2.0",
+  "description": "Polished local-first cross-platform voice dictation with guided setup, resilient STT fallbacks, realtime preview and one-click updates.",
   "main": "src/main.js",
   "author": {
     "name": "Zoroboak",
@@ -13,16 +13,20 @@
     "start": "electron .",
     "dev": "electron . --dev",
     "test": "node --test tests/*.test.js",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/providers.js && node --check src/store.js && node --check src/injector.js && node --check src/audio.js && node --check src/catalog.js && node --check renderer/app.js && node --check renderer/overlay.js",
+    "check": "node scripts/check.js",
     "dist": "electron-builder --publish never",
     "dist:linux": "electron-builder --linux AppImage deb --publish never",
     "dist:win": "electron-builder --win nsis portable --publish never",
-    "dist:mac": "electron-builder --mac dmg zip --publish never"
+    "dist:mac": "electron-builder --mac dmg zip --publish never",
+    "test:electron": "node scripts/electron-smoke.cjs"
   },
-  "dependencies": {},
+  "dependencies": {
+    "electron-updater": "6.8.9"
+  },
   "devDependencies": {
     "electron": "43.2.0",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "playwright": "1.55.1"
   },
   "build": {
     "appId": "com.zoroboak.AlexDictate",
@@ -33,7 +37,10 @@
       "renderer/**/*",
       "assets/**/*",
       "package.json",
-      "README.md"
+      "README.md",
+      "docs/**/*",
+      "CHANGELOG.md",
+      "LICENSE"
     ],
     "directories": {
       "output": "dist"
@@ -50,13 +57,15 @@
           "Comment": "Voice dictation in any application",
           "StartupWMClass": "Alex Dictate"
         }
-      }
+      },
+      "icon": "assets/icon.png"
     },
     "win": {
       "target": [
         "nsis",
         "portable"
-      ]
+      ],
+      "icon": "assets/icon.png"
     },
     "mac": {
       "target": [
@@ -67,7 +76,8 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Alex Dictate needs microphone access to transcribe your voice.",
         "NSAppleEventsUsageDescription": "Alex Dictate uses accessibility automation to paste transcribed text into the active application."
-      }
+      },
+      "icon": "assets/icon.png"
     },
     "protocols": [
       {
@@ -76,6 +86,25 @@
           "alex-dictate"
         ]
       }
-    ]
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Zoroboak",
+        "repo": "simple-windows-super-whisper",
+        "releaseType": "release"
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "scripts/setup-kde-wayland.sh",
+        "to": "scripts/setup-kde-wayland.sh"
+      }
+    ],
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
   }
 }
