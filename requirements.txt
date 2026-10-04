@@ -1,7 +1,0 @@
-keyboard==0.13.5
-pyaudio==0.2.13
-requests==2.31.0
-python-dotenv==1.0.0
-pyperclip==1.8.2
-PyQt5==5.15.9
-numpy==1.24.3 
