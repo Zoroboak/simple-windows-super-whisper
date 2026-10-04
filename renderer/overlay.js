@@ -47,13 +47,16 @@ async function start() {
         stream = await openMic('default'); warning = 'Micrófono seleccionado no disponible; usando el predeterminado.';
       } else throw e;
     }
-    audioCtx = new AudioContext({ sampleRate: 16000 });
+    // Use the sound server's native rate. The tested worklet converts to 16 kHz.
+    audioCtx = new AudioContext({ latencyHint: 'interactive' });
+    ui('starting', 'Iniciando el motor de audio…');
+    await deadline(audioCtx.resume(), 6000, 'El motor de audio no respondió. Comprueba el dispositivo de sonido y vuelve a intentarlo.');
+    ui('starting', 'Preparando la captura local…');
     await deadline(audioCtx.audioWorklet.addModule('pcm-worklet.js'), 8000, 'No se pudo preparar el motor de audio.');
     processor = new AudioWorkletNode(audioCtx, 'alex-pcm');
     source = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser(); analyser.fftSize = 256;
-    // Do not announce recording before the audio engine can actually run.
-    await deadline(audioCtx.resume(), 6000, 'El motor de audio no respondió. Comprueba el dispositivo de sonido y vuelve a intentarlo.');
+    // Announce recording only after the engine and capture worklet are ready.
     rid = await window.alex.recordingStarted({ microphoneLabel: stream.getAudioTracks()[0]?.label || '' });
     const recordingId = rid;
     processor.port.onmessage = event => {
@@ -93,7 +96,6 @@ async function stop(saveOnly = false) {
   cancelAnimationFrame(anim); clearTimeout(maxTimer);
   const id = rid;
   try {
-    // Flush and await acknowledged disk writes before closing the audio engine.
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('El micrófono no respondió al cierre.')), 2000);
       flushResolve = () => { clearTimeout(timer); resolve(); };
