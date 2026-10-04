@@ -1,11 +1,19 @@
 let stream, audioCtx, source, analyser, processor, anim, maxTimer, rid = null;
 let stage = 'idle', started = 0, writes = Promise.resolve(), pending = 0, writeError = null, flushResolve;
+let stopRequested = null;
 const $ = s => document.querySelector(s), canvas = $('#wave'), ctx = canvas.getContext('2d');
 function ui(status, message) {
   $('#dot').className = 'dot ' + ({ recording: 'live', processing: 'work', done: 'ok', failed: 'bad' }[status] || '');
   $('#label').textContent = { starting: 'Preparando micrófono', recording: 'Escuchando', processing: 'Procesando', done: 'Listo', failed: 'Revisa el historial' }[status] || status;
   $('#text').className = status === 'recording' ? 'ghost' : 'solid';
   if (message !== undefined) $('#text').textContent = message;
+}
+function deadline(promise, ms, message, onLate) {
+  let expired = false, timer;
+  return Promise.race([
+    promise.then(value => { if (expired) { onLate?.(value); throw new Error(message); } return value; }),
+    new Promise((_, reject) => { timer = setTimeout(() => { expired = true; reject(new Error(message)); }, ms); })
+  ]).finally(() => clearTimeout(timer));
 }
 function draw() {
   if (!analyser || stage !== 'recording') return;
@@ -23,11 +31,13 @@ function draw() {
 async function openMic(deviceId) {
   const audio = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true };
   if (deviceId && deviceId !== 'default') audio.deviceId = { exact: deviceId };
-  return navigator.mediaDevices.getUserMedia({ audio });
+  return deadline(navigator.mediaDevices.getUserMedia({ audio }), 30000,
+    'No se recibió permiso de micrófono. Revisa los permisos del sistema y vuelve a intentarlo.',
+    lateStream => lateStream.getTracks().forEach(track => track.stop()));
 }
 async function start() {
   if (stage !== 'idle') return;
-  stage = 'starting'; writeError = null; writes = Promise.resolve(); pending = 0;
+  stage = 'starting'; stopRequested = null; writeError = null; writes = Promise.resolve(); pending = 0;
   ui('starting', 'Esperando permiso de micrófono…');
   try {
     const state = await window.alex.state(); let warning = '';
@@ -38,10 +48,12 @@ async function start() {
       } else throw e;
     }
     audioCtx = new AudioContext({ sampleRate: 16000 });
-    await audioCtx.audioWorklet.addModule('pcm-worklet.js');
+    await deadline(audioCtx.audioWorklet.addModule('pcm-worklet.js'), 8000, 'No se pudo preparar el motor de audio.');
     processor = new AudioWorkletNode(audioCtx, 'alex-pcm');
     source = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser(); analyser.fftSize = 256;
+    // Do not announce recording before the audio engine can actually run.
+    await deadline(audioCtx.resume(), 6000, 'El motor de audio no respondió. Comprueba el dispositivo de sonido y vuelve a intentarlo.');
     rid = await window.alex.recordingStarted({ microphoneLabel: stream.getAudioTracks()[0]?.label || '' });
     const recordingId = rid;
     processor.port.onmessage = event => {
@@ -54,44 +66,48 @@ async function start() {
       if (pending > 32 && stage === 'recording') { writeError = new Error('El disco no guarda el audio con suficiente rapidez.'); setTimeout(() => stop(true), 0); }
     };
     source.connect(analyser); source.connect(processor); processor.connect(audioCtx.destination);
-    await audioCtx.resume(); started = performance.now(); stage = 'recording';
+    started = performance.now(); stage = 'recording';
     stream.getAudioTracks()[0].onended = () => { if (stage === 'recording') stop(true); };
     ui('recording', warning || 'Habla con naturalidad. Tu audio se está guardando.');
     $('#hint').textContent = 'Pulsa el atajo para terminar · guardar sin enviar desde la bandeja';
     maxTimer = setTimeout(() => stop(), 30 * 60 * 1000); draw();
+    if (stopRequested !== null) await stop(stopRequested);
   } catch (error) {
-    await release(); stage = 'idle';
-    await window.alex.recordingAborted({ id: rid, error: error.message }).catch(() => {}); rid = null;
+    const failedId = rid; await release(); stage = 'idle'; rid = null;
+    await window.alex.recordingAborted({ id: failedId, error: error.message }).catch(() => {});
     ui('failed', 'No se pudo iniciar: ' + error.message);
   }
 }
 async function release() {
   cancelAnimationFrame(anim); clearTimeout(maxTimer);
-  if (stream) stream.getTracks().forEach(t => { t.onended = null; t.stop(); });
-  try { source?.disconnect(); processor?.disconnect(); await audioCtx?.close(); } catch (_) {}
+  const oldStream = stream, oldContext = audioCtx, oldSource = source, oldProcessor = processor;
   stream = audioCtx = source = processor = analyser = null;
+  if (oldStream) oldStream.getTracks().forEach(t => { t.onended = null; t.stop(); });
+  try { oldSource?.disconnect(); oldProcessor?.disconnect(); } catch (_) {}
+  try { if (oldContext) await deadline(oldContext.close(), 2000, 'Cierre de audio pendiente.'); } catch (_) {}
 }
 async function stop(saveOnly = false) {
+  if (stage === 'starting') { stopRequested = saveOnly; return; }
   if (stage !== 'recording') return;
   stage = 'stopping'; ui('processing', 'Guardando los últimos fragmentos…');
   cancelAnimationFrame(anim); clearTimeout(maxTimer);
+  const id = rid;
   try {
-    // Flush the AudioWorklet and await every acknowledged disk write before finalizing.
+    // Flush and await acknowledged disk writes before closing the audio engine.
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('El micrófono no respondió al cierre.')), 2000);
       flushResolve = () => { clearTimeout(timer); resolve(); };
       processor.port.postMessage('flush');
     });
-    await writes;
-    const id = rid; await release(); rid = null;
+    await writes; await release(); rid = null;
     if (writeError) await window.alex.recordingAborted({ id, error: writeError.message });
     else if (saveOnly) await window.alex.recordingCancelled(id);
     else await window.alex.recordingFinished({ id });
   } catch (error) {
     await release();
-    await window.alex.recordingAborted({ id: rid, error: error.message }).catch(() => {}); rid = null;
+    await window.alex.recordingAborted({ id, error: error.message }).catch(() => {}); rid = null;
     ui('failed', error.message + ' Revisa el audio guardado en Historial.');
-  } finally { stage = 'idle'; flushResolve = null; }
+  } finally { stage = 'idle'; flushResolve = null; stopRequested = null; }
 }
 window.alex.onCommand(command => {
   if (command.type === 'start') start();

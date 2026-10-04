@@ -1,8 +1,7 @@
 name: Validate and package
 on:
   push:
-    branches: [master, alex-dictate-v1.1]
-    paths-ignore: ['.delivery/**', '.github/workflows/delivery.yml']
+    branches: [master]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -20,6 +19,15 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - name: Archive exact reviewed source
+        if: runner.os == 'Linux'
+        run: git archive --format=zip --prefix=alex-dictate/ HEAD > source-review.zip
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: review-source
+          path: source-review.zip
+          retention-days: 14
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -28,9 +36,18 @@ jobs:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
       - run: npm run check
       - run: npm test
+      - name: Headless audio service for real Electron test
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y pulseaudio dbus-x11
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=alex_qa
+          pactl set-default-sink alex_qa
       - name: Real Electron smoke (Linux, fake microphone)
         if: runner.os == 'Linux'
-        run: xvfb-run -a npm run test:electron
+        timeout-minutes: 3
+        run: dbus-run-session -- xvfb-run -a npm run test:electron
       - name: Build installers and update metadata
         run: npm run dist
         env:
