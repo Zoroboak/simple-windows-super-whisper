@@ -1,6 +1,6 @@
 const path = require('path');
 const fs = require('fs');
-const { pathToFileURL } = require('url');
+const { installLocalUi, uiUrl } = require('./local-ui');
 const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, nativeImage, dialog, clipboard, session, net, screen, shell, systemPreferences } = require('electron');
 const { Store } = require('./store');
 const { transcribeWithFallback } = require('./providers');
@@ -19,7 +19,6 @@ if (!app.requestSingleInstanceLock()) app.exit(0);
 let store, settingsWin, overlayWin, overlayReady, tray, currentHotkey, live;
 let activeId = null, processingId = null, phase = 'idle', hideTimer, updateTimer, quitAfterSave = false, captureFault = null;
 let liveInsertion = Promise.resolve(), liveBuffer = '', liveTimer, liveAllowed = false, liveInserted = false;
-const rendererFile = name => path.join(__dirname, '..', 'renderer', name);
 const send = (win, channel, data) => { if (win && !win.isDestroyed()) win.webContents.send(channel, data); };
 const notify = text => send(settingsWin, 'notice', { text });
 const overlaySend = (channel, data) => send(overlayWin, channel, data);
@@ -29,7 +28,7 @@ function reset() { phase = 'idle'; activeId = null; processingId = null; capture
 function quietFailure(id, message) { try { if (id) store.markFailure(id, message); } catch (_) {} }
 function hideLater(ms) { clearTimeout(hideTimer); hideTimer = setTimeout(() => { if (!isBusy()) overlayWin?.hide(); }, ms); }
 function harden(win, name) {
-  const expected = pathToFileURL(rendererFile(name)).href;
+  const expected = uiUrl(name);
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (e, url) => { if (url !== expected) e.preventDefault(); });
   win.webContents.on('will-attach-webview', e => e.preventDefault());
@@ -39,15 +38,15 @@ function settingsWindow() {
   settingsWin = new BrowserWindow({ width: 1180, height: 800, minWidth: 880, minHeight: 620,
     title: 'Alex Dictate', backgroundColor: '#0b0d10', autoHideMenuBar: true,
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
-  harden(settingsWin, 'index.html'); settingsWin.loadFile(rendererFile('index.html'));
+  harden(settingsWin, 'index.html'); settingsWin.loadURL(uiUrl('index.html'));
   settingsWin.on('close', event => { if (!app.isQuitting) { event.preventDefault(); settingsWin.hide(); } });
 }
 function makeOverlay() {
   overlayWin = new BrowserWindow({ width: 660, height: 190, frame: false, transparent: true, resizable: false,
     show: false, alwaysOnTop: true, skipTaskbar: true, focusable: false, hasShadow: false,
-    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false } });
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, autoplayPolicy: 'no-user-gesture-required' } });
   harden(overlayWin, 'overlay.html'); overlayWin.setAlwaysOnTop(true, 'floating');
-  overlayReady = overlayWin.loadFile(rendererFile('overlay.html'));
+  overlayReady = overlayWin.loadURL(uiUrl('overlay.html'));
   overlayWin.webContents.on('render-process-gone', () => {
     live?.close(); liveAllowed = false; quietFailure(activeId, 'La ventana de captura se cerró. El audio parcial permanece en Historial.'); reset();
     if (!app.isQuitting) { overlayWin.destroy(); makeOverlay(); settingsWindow(); }
@@ -148,6 +147,7 @@ async function abortCapture({ id, error }) {
   reset(); notify('No se pudo completar la captura. Revisa micrófono y audio local en Historial.'); return true;
 }
 app.whenReady().then(async () => {
+  installLocalUi();
   store = new Store(); store.recoverInterrupted(); store.cleanupCompletedAudio();
   session.defaultSession.setPermissionRequestHandler((wc, permission, cb, details = {}) => {
     const own = [settingsWin, overlayWin].some(w => w && w.webContents === wc);
