@@ -52,12 +52,8 @@ jobs:
         run: npm run dist
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - name: Collect installable files only
-        shell: bash
-        run: |
-          mkdir -p release-files
-          find dist -maxdepth 1 -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.exe' -o -name '*.dmg' -o -name '*.zip' -o -name 'latest*.yml' -o -name '*.blockmap' \) -exec cp {} release-files/ \;
-          test -n "$(ls -A release-files)"
+      - name: Normalize assets and verify updater URLs and hashes
+        run: node scripts/collect-release.cjs
       - uses: actions/upload-artifact@v4
         with:
           name: alex-dictate-${{ matrix.os }}
@@ -92,7 +88,7 @@ jobs:
           version=$(node -p "require('./package.json').version")
           tag="v$version"
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Version already published; assets are immutable. Bump package.json for a new release."
+            echo "Version already published; assets are not overwritten. Bump package.json for a new release."
             exit 0
           fi
           git archive --format=zip --prefix="alex-dictate-$version/" HEAD > "release-assets/Alex-Dictate-$version-source.zip"
@@ -100,3 +96,6 @@ jobs:
           mapfile -d '' files < <(find release-assets -maxdepth 1 -type f -print0)
           gh release create "$tag" "${files[@]}" --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" --title "Alex Dictate $tag" --notes-file docs/RELEASE-NOTES.md --latest
+          find release-assets -maxdepth 1 -type f -printf '%f\n' | sort > /tmp/expected-assets.txt
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sort > /tmp/published-assets.txt
+          diff -u /tmp/expected-assets.txt /tmp/published-assets.txt
