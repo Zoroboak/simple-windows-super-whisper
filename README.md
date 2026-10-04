@@ -1,4 +1,4 @@
-# Alex Dictate · 1.2
+# Alex Dictate · 1.2.1
 
 Dicta en tus aplicaciones con un atajo. Aplicación de escritorio para **Kubuntu/KDE, Windows y macOS**, con configuración guiada, audio recuperable, proveedores elegidos por ti y novedades desde la interfaz.
 
