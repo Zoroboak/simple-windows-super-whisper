@@ -2,6 +2,8 @@
 const { app, BrowserWindow, session } = require('electron');
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 if (process.env.ALEX_QA !== '1' || !process.defaultApp) throw new Error('Test entry is development-only.');
+// Hosted CI has no physical GPU. This applies to this test entry, never production.
+app.disableHardwareAcceleration();
 const output = path.resolve('qa'); fs.mkdirSync(output, { recursive: true });
 app.setPath('userData', process.env.ALEX_QA_DIR);
 const failures = [], delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -14,7 +16,18 @@ async function until(fn, message, timeout = 15000) {
   while (Date.now() < end) { const value = await fn(); if (value) return value; await delay(75); }
   throw new Error(message);
 }
-async function image(win, name) { await delay(250); fs.writeFileSync(path.join(output, name + '.png'), (await win.webContents.capturePage()).toPNG()); }
+async function image(win, name) {
+  let lastError;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await delay(350 + attempt * 250);
+    try {
+      const picture = await win.webContents.capturePage();
+      if (picture.isEmpty()) throw new Error('Compositor returned an empty capture.');
+      fs.writeFileSync(path.join(output, name + '.png'), picture.toPNG()); return;
+    } catch (error) { lastError = error; log(`capture retry ${name}: ${error.message}`); }
+  }
+  throw lastError;
+}
 app.on('browser-window-created', (_event, win) => {
   win.webContents.on('console-message', (_event, level, message) => log(`renderer ${level}: ${message}`));
   win.webContents.on('preload-error', (_event, _file, error) => failures.push(error.message));
@@ -41,7 +54,7 @@ app.whenReady().then(async () => {
     step = 'stop and preserve'; log(step);
     await js(settings, 'window.alex.toggle(true)');
     await until(() => js(settings, 'window.alex.state().then(s => s.runtime.phase === "idle")'), 'Capture did not finish');
-    let state = await js(settings, 'window.alex.state()');
+    const state = await js(settings, 'window.alex.state()');
     assert.equal(state.history.length, 1); assert.equal(state.history[0].status, 'failed');
     const id = state.history[0].id;
     assert.ok(state.history[0].bytes > 44);
@@ -64,7 +77,7 @@ app.whenReady().then(async () => {
     assert.deepEqual(failures, []);
     json('smoke-result.json', { passed: true, scope: 'Real Electron Linux; synthetic microphone; no DevTools; no cloud credentials',
       tests: ['startup', 'onboarding', 'AudioWorklet capture', 'non-silent mono PCM16 WAV', 'missing-key failure preserves audio', 'manual retry', 'privileged IPC refused', 'overlay non-focusable', 'all navigation screens'],
-      bytes: wav.length, durationMs: state.history[0].durationMs, peak, failures });
+      version: diagnosis.version, bytes: wav.length, durationMs: state.history[0].durationMs, peak, failures });
     log('Native Electron smoke passed.'); app.exit(0);
   } catch (error) {
     log(`FAILED at ${step}: ${error.stack}`);
