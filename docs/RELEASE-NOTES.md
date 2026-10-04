@@ -6,9 +6,13 @@ Mejoras: AudioWorklet, PCM16 confirmado en disco, recuperación de audio, guarda
 
 ### Instalación
 
-Linux/Kubuntu x64: usa .deb (recomendado) o AppImage. Windows x64: Setup.exe; portable como alternativa manual. Mac Apple Silicon: arm64.dmg y arrastrar a Aplicaciones.
+Linux/Kubuntu x64: usa .deb (recomendado) o AppImage. Windows x64: Setup.exe; portable como alternativa manual. Mac Apple Silicon: arm64.dmg; Mac Intel: .dmg sin arm64. Arrastra Alex Dictate a Aplicaciones.
 
 En KDE/Wayland autoriza el atajo y usa el asistente de autopegado cuando lo indique. No ejecutes la aplicación como root. Revisa SHA256SUMS.txt para comprobar las descargas.
+
+### Revisión de cierre
+
+Inicio de micrófono con tiempos máximos y cierre recuperable, origen local seguro para la interfaz y AudioWorklet, prueba nativa de Electron sin depurador que verifica muestras WAV no silenciosas, reintento, permisos IPC y todas las secciones del panel. Las descargas se publican solo después de superar la matriz de CI.
 
 ### Límites conocidos
 

@@ -11,9 +11,10 @@ Abre **[la última versión publicada](https://github.com/Zoroboak/simple-window
 | Kubuntu/Ubuntu x64 | `.deb` | Ábrelo con Discover o el instalador de paquetes. Inicia Alex Dictate desde el menú. |
 | Linux x64 portable | `.AppImage` | Propiedades → Permisos → permitir ejecutar. Guarda la AppImage en una carpeta permanente. |
 | Windows x64 | `Setup.exe` | Ejecuta el instalador. La edición portable no se actualiza en sitio. |
-| macOS Apple Silicon | `arm64.dmg` | Arrastra Alex Dictate a Aplicaciones y autoriza Micrófono/Accesibilidad. |
+| macOS Apple Silicon (M1 o posterior) | `arm64.dmg` | Arrastra Alex Dictate a Aplicaciones y autoriza Micrófono/Accesibilidad. |
+| macOS Intel | `.dmg` sin `arm64` en el nombre | Mismo procedimiento; elige la compilación x64. |
 
-Esta distribución no incluye certificados comerciales de firma. Windows/macOS pueden solicitar confirmación o bloquear inicialmente una aplicación desconocida. Descarga solo de este repositorio; no desactives las protecciones globales del equipo. En Mac usa la excepción individual de Privacidad y seguridad tras comprobar el origen. Los artefactos actuales de Mac son **Apple Silicon**, no una compilación Intel.
+Esta distribución no incluye certificados comerciales de firma. Windows/macOS pueden solicitar confirmación o bloquear inicialmente una aplicación desconocida. Descarga solo de este repositorio; no desactives las protecciones globales del equipo. En Mac usa la excepción individual de Privacidad y seguridad tras comprobar el origen. Se distribuyen paquetes de Mac separados para **Apple Silicon e Intel**; elige el correspondiente a tu equipo.
 
 ### Tus primeros pasos
 

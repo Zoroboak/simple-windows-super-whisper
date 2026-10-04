@@ -14,7 +14,7 @@ async function until(fn, message, timeout = 15000) {
   while (Date.now() < end) { const value = await fn(); if (value) return value; await delay(75); }
   throw new Error(message);
 }
-async function image(win, name) { fs.writeFileSync(path.join(output, name + '.png'), (await win.webContents.capturePage()).toPNG()); }
+async function image(win, name) { await delay(250); fs.writeFileSync(path.join(output, name + '.png'), (await win.webContents.capturePage()).toPNG()); }
 app.on('browser-window-created', (_event, win) => {
   win.webContents.on('console-message', (_event, level, message) => log(`renderer ${level}: ${message}`));
   win.webContents.on('preload-error', (_event, _file, error) => failures.push(error.message));
