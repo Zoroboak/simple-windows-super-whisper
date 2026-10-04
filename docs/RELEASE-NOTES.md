@@ -1,3 +1,7 @@
+## Alex Dictate 1.2.1
+
+Corrección de distribución: los nombres publicados coinciden con los URL del actualizador. CI verifica todos los tamaños y hashes SHA-512 antes de publicar y comprueba que GitHub conserva los nombres. Usa esta versión en lugar de 1.2.0.
+
 ## Alex Dictate 1.2
 
 Nueva configuración guiada para empezar con Groq gratis o conectar saldo de OpenRouter, prueba local de micrófono y cuadro de primer dictado. Cadena de rutas persistente: el catálogo se consulta solo cuando tú lo pides.

@@ -1,3 +1,9 @@
+# 1.2.1
+
+- Normalización de nombres de instalador para GitHub Releases.
+- Validación automática de URL, tamaño y SHA-512 del actualizador.
+- Misma funcionalidad de dictado y configuración que 1.2.0.
+
 # Cambios
 
 ## 1.2.0
